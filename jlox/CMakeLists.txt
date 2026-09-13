@@ -9,11 +9,18 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 add_executable(jlox
     src/main.cpp
 
+    src/ast_printer.cpp
     src/lox.cpp
     src/scanner.cpp
     src/token.cpp
     src/token_type.cpp
 )
+
+add_executable(generate_ast
+    tools/generate_ast.cpp
+)
+
+target_compile_features(generate_ast PRIVATE cxx_std_20)
 
 if(MSVC)
     target_compile_options(jlox PRIVATE /W4 /permissive-)
