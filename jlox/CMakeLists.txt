@@ -11,6 +11,7 @@ add_executable(jlox
 
     src/ast_printer.cpp
     src/lox.cpp
+    src/parser.cpp
     src/scanner.cpp
     src/token.cpp
     src/token_type.cpp

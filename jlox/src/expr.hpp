@@ -8,6 +8,7 @@
 namespace jlox {
 
 class BinaryExpr;
+class ConditionalExpr;
 class GroupingExpr;
 class LiteralExpr;
 class UnaryExpr;
@@ -17,6 +18,7 @@ public:
   virtual ~ExprVisitor() = default;
 
   virtual void VisitBinaryExpr(const BinaryExpr &expr) = 0;
+  virtual void VisitConditionalExpr(const ConditionalExpr &expr) = 0;
   virtual void VisitGroupingExpr(const GroupingExpr &expr) = 0;
   virtual void VisitLiteralExpr(const LiteralExpr &expr) = 0;
   virtual void VisitUnaryExpr(const UnaryExpr &expr) = 0;
@@ -45,6 +47,22 @@ public:
   ExprPtr left;
   Token op;
   ExprPtr right;
+};
+
+class ConditionalExpr final : public Expr {
+public:
+  ConditionalExpr(ExprPtr condition, ExprPtr thenBranch, ExprPtr elseBranch)
+      : condition(std::move(condition)),
+        thenBranch(std::move(thenBranch)),
+        elseBranch(std::move(elseBranch)) {}
+
+  void Accept(ExprVisitor &visitor) const override {
+    visitor.VisitConditionalExpr(*this);
+  }
+
+  ExprPtr condition;
+  ExprPtr thenBranch;
+  ExprPtr elseBranch;
 };
 
 class GroupingExpr final : public Expr {

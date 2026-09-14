@@ -6,7 +6,6 @@
 #include <variant>
 
 namespace jlox {
-
 std::string AstPrinter::Print(const Expr &expr) {
   expr.Accept(*this);
   return result_;
@@ -14,6 +13,10 @@ std::string AstPrinter::Print(const Expr &expr) {
 
 void AstPrinter::VisitBinaryExpr(const BinaryExpr &expr) {
   Parenthesize(expr.op.lexeme, *expr.left, *expr.right);
+}
+
+void AstPrinter::VisitConditionalExpr(const ConditionalExpr &expr) {
+  Parenthesize("?:", *expr.condition, *expr.thenBranch, *expr.elseBranch);
 }
 
 void AstPrinter::VisitGroupingExpr(const GroupingExpr &expr) {
@@ -33,6 +36,8 @@ void AstPrinter::VisitLiteralExpr(const LiteralExpr &expr) {
           return stream.str();
         } else if constexpr (std::is_same_v<T, std::string_view>) {
           return std::string(value);
+        } else if constexpr (std::is_same_v<T, bool>) {
+          return value ? "true" : "false";
         }
       },
       expr.value);
@@ -46,5 +51,4 @@ std::string AstPrinter::PrintSubexpression(const Expr &expr) {
   AstPrinter printer;
   return printer.Print(expr);
 }
-
 } // namespace jlox

@@ -26,6 +26,10 @@ std::ostream &operator<<(std::ostream &stream, TokenType type) {
     return stream << "SLASH";
   case TokenType::Star:
     return stream << "STAR";
+  case TokenType::Question:
+    return stream << "QUESTION";
+  case TokenType::Colon:
+    return stream << "COLON";
 
   case TokenType::Bang:
     return stream << "BANG";

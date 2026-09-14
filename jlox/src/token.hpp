@@ -9,7 +9,7 @@
 
 namespace jlox {
 
-using Literal = std::variant<std::monostate, double, std::string_view>;
+using Literal = std::variant<std::monostate, double, std::string_view, bool>;
 
 struct Token {
   TokenType type;

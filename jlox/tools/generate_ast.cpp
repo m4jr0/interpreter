@@ -132,6 +132,10 @@ int main(int argc, char *argv[]) {
               {"ExprPtr", "right"},
           },
       },
+      {"Conditional",
+       {{"ExprPtr", "condition"},
+        {"ExprPtr", "thenBranch"},
+        {"ExprPtr", "elseBranch"}}},
       {
           "Grouping",
           {

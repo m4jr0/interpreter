@@ -1,80 +1,45 @@
-// Welcome to Lox!
-
-var language = "Lox";
-var version = 1.0;
-var answer = 42;
-
-print language;
-print version;
-print answer;
-
-// Arithmetic.
-var result = (10 + 5) * 2 - 8 / 4;
-print result;
-
-// Comparisons.
-print 10 > 5;
-print 10 >= 10;
-print 5 < 10;
-print 5 <= 5;
-print 1 == 1;
-print 1 != 2;
-
-// Boolean values and operators.
-var happy = true;
-var sad = false;
-var nothing = nil;
-
-print happy and !sad;
-print happy or sad;
-
-// Control flow.
-if (answer == 42) {
-  print "The answer!";
-} else {
-  print "Wrong universe.";
-}
-
-// A loop.
-var i = 0;
-
-while (i < 3) {
-  print i;
-  i = i + 1;
-}
-
-// Function.
-fun add(a, b) {
-  return a + b;
-}
-
-print add(20, 22);
-
-// Class.
-class Greeter {
-  greet(name) {
-    print "Hello, " + name;
-  }
-}
-
-var greeter = Greeter();
-greeter.greet("Lox");
-
-// Inheritance and some remaining keywords.
-class FancyGreeter < Greeter {
-  greet(name) {
-    super.greet(name);
-    print this;
-  }
-}
-
 /*
-  This is a block comment.
-  Your extension to the book should eat the whole thing.
+ * JLox - Chapter 6 expression parser playground
+ *
+ * Currently supported:
+ *   - literals
+ *   - grouping
+ *   - unary operators
+ *   - arithmetic
+ *   - comparisons
+ *   - equality
+ *   - conditional expressions
+ *   - comma expressions
+ *
+ * Precedence, lowest to highest:
+ *
+ *   ,
+ *   ?:
+ *   == !=
+ *   < <= > >=
+ *   + -
+ *   * /
+ *   ! -
+ *   primary
+ *
+ * The parser currently accepts a single top-level expression.
+ *
+ * Try replacing the expression below with:
+ *
+ *   true ? 1, 2 : 3
+ *
+ * Expected:
+ *   (?: true (, 1 2) 3)
+ *
+ * Then try:
+ *
+ *   true ? 1 : 2, 3
+ *
+ * Expected:
+ *   (, (?: true 1 2) 3)
+ *
+ * Those two examples demonstrate the special precedence rule
+ * for the middle operand of C-style conditional expressions.
+ */
 
-  /* And your version even supports nesting! */
-*/
-
-for (var n = 0; n < 3; n = n + 1) {
-  print n;
-}
+(true ? 1 + 2 * 3 : 10 / 2), !(4 >= 5)
