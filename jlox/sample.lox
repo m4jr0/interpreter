@@ -1,45 +1,44 @@
 /*
- * JLox - Chapter 6 expression parser playground
+ * JLox - Chapter 8: Statements and State
  *
- * Currently supported:
- *   - literals
- *   - grouping
- *   - unary operators
- *   - arithmetic
- *   - comparisons
- *   - equality
- *   - conditional expressions
- *   - comma expressions
- *
- * Precedence, lowest to highest:
- *
- *   ,
- *   ?:
- *   == !=
- *   < <= > >=
- *   + -
- *   * /
- *   ! -
- *   primary
- *
- * The parser currently accepts a single top-level expression.
- *
- * Try replacing the expression below with:
- *
- *   true ? 1, 2 : 3
- *
- * Expected:
- *   (?: true (, 1 2) 3)
- *
- * Then try:
- *
- *   true ? 1 : 2, 3
- *
- * Expected:
- *   (, (?: true 1 2) 3)
- *
- * Those two examples demonstrate the special precedence rule
- * for the middle operand of C-style conditional expressions.
+ * Tests:
+ * - variable declarations
+ * - variable lookup
+ * - assignment
+ * - chained assignment
+ * - expression statements
+ * - print statements
+ * - blocks
+ * - lexical scope
+ * - shadowing
  */
 
-(true ? 1 + 2 * 3 : 10 / 2), !(4 >= 5)
+var global = "global";
+
+print global;
+
+var a = 1;
+var b = 2;
+
+a = b = 42;
+
+print a;
+print b;
+
+{
+    var global = "inner";
+
+    print global;
+
+    var local = "only inside";
+    print local;
+
+    {
+        var global = "very inner";
+        print global;
+    }
+
+    print global;
+}
+
+print global;

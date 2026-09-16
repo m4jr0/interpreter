@@ -1,8 +1,9 @@
-#include <cstdlib>
+#include <cctype>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace {
@@ -17,98 +18,117 @@ struct AstType {
   std::vector<Field> fields;
 };
 
-void WriteHeader(const std::filesystem::path &outputPath,
-                 const std::vector<AstType> &types) {
-  std::ofstream output(outputPath);
-
-  if (!output) {
-    std::cerr << "Could not open " << outputPath << '\n';
-    std::exit(1);
+std::string LowerFirst(std::string value) {
+  if (!value.empty()) {
+    value[0] =
+        static_cast<char>(std::tolower(static_cast<unsigned char>(value[0])));
   }
 
-  output << R"(#pragma once
+  return value;
+}
 
-#include <memory>
-#include <utility>
+void DefineAst(const std::filesystem::path &outputDir,
+               std::string_view baseName, const std::vector<AstType> &types) {
+  const std::string filename =
+      std::string(baseName) == "Expr" ? "expr.hpp" : "stmt.hpp";
 
-#include "token.hpp"
+  const auto path = outputDir / filename;
+  std::ofstream out(path);
 
-namespace jlox {
-
-)";
-
-  // Forward declarations.
-  for (const AstType &type : types) {
-    output << "class " << type.name << "Expr;\n";
+  if (!out) {
+    throw std::runtime_error("Could not open " + path.string());
   }
 
-  output << '\n';
+  out << "#pragma once\n\n";
 
-  // Visitor interface.
-  output << "class ExprVisitor {\n";
-  output << "public:\n";
-  output << "  virtual ~ExprVisitor() = default;\n\n";
+  out << "#include \"token.hpp\"\n";
 
-  for (const AstType &type : types) {
-    output << "  virtual void Visit" << type.name << "Expr(const " << type.name
-           << "Expr &expr) = 0;\n";
+  if (baseName == "Expr") {
+    out << "#include \"value.hpp\"\n";
   }
 
-  output << "};\n\n";
+  if (baseName == "Stmt") {
+    out << "#include \"expr.hpp\"\n";
+  }
 
-  // Base expression.
-  output << R"(class Expr {
-public:
-  virtual ~Expr() = default;
+  out << "\n";
+  out << "#include <memory>\n";
+  out << "#include <utility>\n";
+  out << "#include <vector>\n\n";
 
-  virtual void Accept(ExprVisitor &visitor) const = 0;
-};
+  out << "namespace jlox {\n\n";
 
-using ExprPtr = std::unique_ptr<Expr>;
+  out << "class " << baseName << ";\n";
 
-)";
+  for (const auto &type : types) {
+    out << "class " << type.name << baseName << ";\n";
+  }
 
-  // Concrete expression types.
-  for (const AstType &type : types) {
-    output << "class " << type.name << "Expr final : public Expr {\n";
-    output << "public:\n";
+  out << "\n";
 
-    output << "  " << type.name << "Expr(";
+  out << "class " << baseName << "Visitor {\n";
+  out << "public:\n";
+  out << "  virtual ~" << baseName << "Visitor() = default;\n\n";
+
+  for (const auto &type : types) {
+    out << "  virtual void Visit" << type.name << baseName << "(const "
+        << type.name << baseName << " &" << LowerFirst(type.name) << ") = 0;\n";
+  }
+
+  out << "};\n\n";
+
+  out << "class " << baseName << " {\n";
+  out << "public:\n";
+  out << "  virtual ~" << baseName << "() = default;\n";
+  out << "  virtual void Accept(" << baseName
+      << "Visitor &visitor) const = 0;\n";
+  out << "};\n\n";
+
+  out << "using " << baseName << "Ptr = std::unique_ptr<" << baseName
+      << ">;\n\n";
+
+  for (const auto &type : types) {
+    const std::string className = type.name + std::string(baseName);
+
+    out << "class " << className << " final : public " << baseName << " {\n";
+    out << "public:\n";
+
+    out << "  " << className << "(";
 
     for (std::size_t i = 0; i < type.fields.size(); ++i) {
-      if (i != 0) {
-        output << ", ";
+      if (i > 0) {
+        out << ", ";
       }
 
-      output << type.fields[i].type << ' ' << type.fields[i].name;
+      out << type.fields[i].type << " " << type.fields[i].name;
     }
 
-    output << ")\n";
-    output << "      : ";
+    out << ")\n      : ";
 
     for (std::size_t i = 0; i < type.fields.size(); ++i) {
-      if (i != 0) {
-        output << ",\n        ";
+      if (i > 0) {
+        out << ", ";
       }
 
-      output << type.fields[i].name << "(std::move(" << type.fields[i].name
-             << "))";
+      out << type.fields[i].name << "(std::move(" << type.fields[i].name
+          << "))";
     }
 
-    output << " {}\n\n";
+    out << " {}\n\n";
 
-    output << "  void Accept(ExprVisitor &visitor) const override {\n";
-    output << "    visitor.Visit" << type.name << "Expr(*this);\n";
-    output << "  }\n\n";
+    out << "  void Accept(" << baseName
+        << "Visitor &visitor) const override {\n";
+    out << "    visitor.Visit" << type.name << baseName << "(*this);\n";
+    out << "  }\n\n";
 
-    for (const Field &field : type.fields) {
-      output << "  " << field.type << ' ' << field.name << ";\n";
+    for (const auto &field : type.fields) {
+      out << "  " << field.type << " " << field.name << ";\n";
     }
 
-    output << "};\n\n";
+    out << "};\n\n";
   }
 
-  output << "} // namespace jlox\n";
+  out << "} // namespace jlox\n";
 }
 
 } // namespace
@@ -119,49 +139,67 @@ int main(int argc, char *argv[]) {
     return 64;
   }
 
-  const std::filesystem::path outputDirectory = argv[1];
-
-  std::filesystem::create_directories(outputDirectory);
+  const std::filesystem::path outputDir = argv[1];
 
   const std::vector<AstType> expressionTypes{
-      {
-          "Binary",
-          {
-              {"ExprPtr", "left"},
-              {"Token", "op"},
-              {"ExprPtr", "right"},
-          },
-      },
+      {"Assign",
+       {
+           {"Token", "name"},
+           {"ExprPtr", "value"},
+       }},
+      {"Binary",
+       {
+           {"ExprPtr", "left"},
+           {"Token", "op"},
+           {"ExprPtr", "right"},
+       }},
       {"Conditional",
-       {{"ExprPtr", "condition"},
-        {"ExprPtr", "thenBranch"},
-        {"ExprPtr", "elseBranch"}}},
-      {
-          "Grouping",
-          {
-              {"ExprPtr", "expression"},
-          },
-      },
-      {
-          "Literal",
-          {
-              {"Literal", "value"},
-          },
-      },
-      {
-          "Unary",
-          {
-              {"Token", "op"},
-              {"ExprPtr", "right"},
-          },
-      },
+       {
+           {"ExprPtr", "condition"},
+           {"ExprPtr", "thenBranch"},
+           {"ExprPtr", "elseBranch"},
+       }},
+      {"Grouping",
+       {
+           {"ExprPtr", "expression"},
+       }},
+      {"Literal",
+       {
+           {"Literal", "value"},
+       }},
+      {"Unary",
+       {
+           {"Token", "op"},
+           {"ExprPtr", "right"},
+       }},
+      {"Variable",
+       {
+           {"Token", "name"},
+       }},
   };
 
-  const std::filesystem::path outputPath = outputDirectory / "expr.hpp";
+  const std::vector<AstType> statementTypes{
+      {"Block",
+       {
+           {"std::vector<StmtPtr>", "statements"},
+       }},
+      {"Expression",
+       {
+           {"ExprPtr", "expression"},
+       }},
+      {"Print",
+       {
+           {"ExprPtr", "expression"},
+       }},
+      {"Var",
+       {
+           {"Token", "name"},
+           {"ExprPtr", "initializer"},
+       }},
+  };
 
-  WriteHeader(outputPath, expressionTypes);
-
-  std::cout << "Generated " << outputPath.string() << '\n';
+  DefineAst(outputDir, "Expr", expressionTypes);
+  DefineAst(outputDir, "Stmt", statementTypes);
 
   return 0;
 }

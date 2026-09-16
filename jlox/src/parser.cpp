@@ -7,25 +7,129 @@
 
 namespace jlox {
 
-ExprPtr Parser::Parse() {
+std::vector<StmtPtr> Parser::Parse() {
+  std::vector<StmtPtr> statements;
+
+  while (!IsAtEnd()) {
+    if (StmtPtr statement = Declaration()) {
+      statements.push_back(std::move(statement));
+    }
+  }
+
+  return statements;
+}
+
+ExprPtr Parser::ParseExpression() {
   try {
-    return Expression();
+    ExprPtr expression = Expression();
+
+    Consume(TokenType::Eof, "Expect end of expression.");
+
+    return expression;
   } catch (const ParseError &) {
     return nullptr;
   }
 }
 
+StmtPtr Parser::Declaration() {
+  try {
+    if (Match({TokenType::Var})) {
+      return VarDeclaration();
+    }
+
+    return Statement();
+  } catch (const ParseError &) {
+    Synchronize();
+    return nullptr;
+  }
+}
+
+StmtPtr Parser::VarDeclaration() {
+  const Token &name = Consume(TokenType::Identifier, "Expect variable name.");
+
+  ExprPtr initializer;
+
+  if (Match({TokenType::Equal})) {
+    initializer = Expression();
+  }
+
+  Consume(TokenType::Semicolon, "Expect ';' after variable declaration.");
+
+  return std::make_unique<VarStmt>(name, std::move(initializer));
+}
+
+StmtPtr Parser::Statement() {
+  if (Match({TokenType::Print})) {
+    return PrintStatement();
+  }
+
+  if (Match({TokenType::LeftBrace})) {
+    return std::make_unique<BlockStmt>(Block());
+  }
+
+  return ExpressionStatement();
+}
+
+StmtPtr Parser::PrintStatement() {
+  ExprPtr value = Expression();
+
+  Consume(TokenType::Semicolon, "Expect ';' after value.");
+
+  return std::make_unique<PrintStmt>(std::move(value));
+}
+
+StmtPtr Parser::ExpressionStatement() {
+  ExprPtr expression = Expression();
+
+  Consume(TokenType::Semicolon, "Expect ';' after expression.");
+
+  return std::make_unique<ExpressionStmt>(std::move(expression));
+}
+
+std::vector<StmtPtr> Parser::Block() {
+  std::vector<StmtPtr> statements;
+
+  while (!Check(TokenType::RightBrace) && !IsAtEnd()) {
+    if (StmtPtr statement = Declaration()) {
+      statements.push_back(std::move(statement));
+    }
+  }
+
+  Consume(TokenType::RightBrace, "Expect '}' after block.");
+
+  return statements;
+}
+
 ExprPtr Parser::Expression() { return Comma(); }
 
 ExprPtr Parser::Comma() {
-  ExprPtr expr = Conditional();
+  ExprPtr expr = Assignment();
 
   while (Match({TokenType::Comma})) {
-    Token op = Previous();
-    ExprPtr right = Conditional();
+    const Token op = Previous();
+    ExprPtr right = Assignment();
 
-    expr = std::make_unique<BinaryExpr>(std::move(expr), std::move(op),
-                                        std::move(right));
+    expr = std::make_unique<BinaryExpr>(std::move(expr), op, std::move(right));
+  }
+
+  return expr;
+}
+
+ExprPtr Parser::Assignment() {
+  ExprPtr expr = Conditional();
+
+  if (Match({TokenType::Equal})) {
+    const Token equals = Previous();
+
+    ExprPtr value = Assignment();
+
+    if (auto *variable = dynamic_cast<VariableExpr *>(expr.get())) {
+      const Token name = variable->name;
+
+      return std::make_unique<AssignExpr>(name, std::move(value));
+    }
+
+    Error(equals, "Invalid assignment target.");
   }
 
   return expr;
@@ -210,6 +314,10 @@ ExprPtr Parser::Primary() {
     return std::make_unique<LiteralExpr>(Previous().literal);
   }
 
+  if (Match({TokenType::Identifier})) {
+    return std::make_unique<VariableExpr>(Previous());
+  }
+
   if (Match({TokenType::LeftParen})) {
     ExprPtr expr = Expression();
 
@@ -265,6 +373,33 @@ const Token &Parser::Consume(TokenType type, std::string_view message) {
 Parser::ParseError Parser::Error(const Token &token, std::string_view message) {
   Lox::Error(token, message);
   return {};
+}
+
+void Parser::Synchronize() {
+  Advance();
+
+  while (!IsAtEnd()) {
+    if (Previous().type == TokenType::Semicolon) {
+      return;
+    }
+
+    switch (Peek().type) {
+    case TokenType::Class:
+    case TokenType::Fun:
+    case TokenType::Var:
+    case TokenType::For:
+    case TokenType::If:
+    case TokenType::While:
+    case TokenType::Print:
+    case TokenType::Return:
+      return;
+
+    default:
+      break;
+    }
+
+    Advance();
+  }
 }
 
 } // namespace jlox

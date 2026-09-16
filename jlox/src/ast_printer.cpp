@@ -6,9 +6,18 @@
 #include <variant>
 
 namespace jlox {
+
 std::string AstPrinter::Print(const Expr &expr) {
   expr.Accept(*this);
   return result_;
+}
+
+void AstPrinter::VisitAssignExpr(const AssignExpr &expr) {
+  result_ = "(= ";
+  result_ += expr.name.lexeme;
+  result_ += " ";
+  result_ += PrintSubexpression(*expr.value);
+  result_ += ")";
 }
 
 void AstPrinter::VisitBinaryExpr(const BinaryExpr &expr) {
@@ -47,8 +56,13 @@ void AstPrinter::VisitUnaryExpr(const UnaryExpr &expr) {
   Parenthesize(expr.op.lexeme, *expr.right);
 }
 
+void AstPrinter::VisitVariableExpr(const VariableExpr &expr) {
+  result_ = std::string(expr.name.lexeme);
+}
+
 std::string AstPrinter::PrintSubexpression(const Expr &expr) {
   AstPrinter printer;
   return printer.Print(expr);
 }
+
 } // namespace jlox

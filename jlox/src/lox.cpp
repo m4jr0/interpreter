@@ -6,6 +6,7 @@
 #include <string>
 
 #include "ast_printer.hpp"
+#include "interpreter.hpp"
 #include "parser.hpp"
 #include "scanner.hpp"
 
@@ -25,7 +26,11 @@ int Lox::RunFile(std::string_view path) {
   Run(source);
 
   if (hadError_) {
-    return 65;
+    std::exit(65);
+  }
+
+  if (hadRuntimeError_) {
+    std::exit(70);
   }
 
   return 0;
@@ -35,9 +40,10 @@ void Lox::RunPrompt() {
   std::string line;
 
   while (std::cout << "> " && std::getline(std::cin, line)) {
-    Run(line);
+    RunPromptLine(line);
 
     hadError_ = false;
+    hadRuntimeError_ = false;
   }
 }
 
@@ -46,15 +52,42 @@ void Lox::Run(std::string_view source) {
   const auto tokens = scanner.ScanTokens();
 
   Parser parser(tokens);
-  ExprPtr expression = parser.Parse();
+  auto statements = parser.Parse();
 
-  // Stop if either scanning or parsing reported an error.
   if (hadError_) {
     return;
   }
 
-  AstPrinter printer;
-  std::cout << printer.Print(*expression) << '\n';
+  interpreter_.Interpret(statements);
+}
+
+void Lox::RunPromptLine(std::string_view source) {
+  Scanner scanner(source);
+  const auto tokens = scanner.ScanTokens();
+
+  // First try the input as an expression.
+  {
+    Parser parser(tokens);
+    ExprPtr expression = parser.ParseExpression();
+
+    if (!hadError_ && expression) {
+      interpreter_.InterpretExpression(*expression);
+      return;
+    }
+  }
+
+  // The failed speculative expression parse may have reported errors.
+  // Clear those before trying the input as a normal program.
+  hadError_ = false;
+
+  Parser parser(tokens);
+  auto statements = parser.Parse();
+
+  if (hadError_) {
+    return;
+  }
+
+  interpreter_.Interpret(statements);
 }
 
 void Lox::Error(std::size_t line, std::string_view message) {
@@ -69,6 +102,11 @@ void Lox::Error(const Token &token, std::string_view message) {
 
     Report(token.line, where, message);
   }
+}
+
+void Lox::RuntimeError(const jlox::RuntimeError &error) {
+  std::cerr << error.what() << "\n[line " << error.token.line << "]\n";
+  hadRuntimeError_ = true;
 }
 
 void Lox::Report(std::size_t line, std::string_view where,

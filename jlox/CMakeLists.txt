@@ -10,6 +10,7 @@ add_executable(jlox
     src/main.cpp
 
     src/ast_printer.cpp
+    src/interpreter.cpp
     src/lox.cpp
     src/parser.cpp
     src/scanner.cpp
