@@ -8,6 +8,7 @@ set(CMAKE_C_EXTENSIONS OFF)
 
 add_executable(clox
     src/chunk.c
+    src/compiler.c
     src/debug.c
     src/main.c
     src/memory.c
