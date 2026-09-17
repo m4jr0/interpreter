@@ -3,6 +3,7 @@
 #include <stdio.h>
 
 #include "debug.h"
+#include "scanner.h"
 
 VM vm;
 
@@ -67,9 +68,27 @@ static InterpretResult run(void) {
 #undef READ_CONSTANT
 }
 
-InterpretResult interpret(Chunk *chunk) {
-  vm.chunk = chunk;
-  vm.ip = vm.chunk->code;
+InterpretResult interpret(const char *source) {
+  initScanner(source);
 
-  return run();
+  int line = -1;
+
+  for (;;) {
+    Token token = scanToken();
+
+    if (token.line != line) {
+      printf("%4d ", token.line);
+      line = token.line;
+    } else {
+      printf("   | ");
+    }
+
+    printf("%2d '%.*s'\n", token.type, token.length, token.start);
+
+    if (token.type == TOKEN_EOF) {
+      break;
+    }
+  }
+
+  return INTERPRET_OK;
 }

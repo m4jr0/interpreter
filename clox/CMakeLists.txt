@@ -7,11 +7,12 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 
 add_executable(clox
-    src/main.c
-    src/memory.c
-    src/value.c
     src/chunk.c
     src/debug.c
+    src/main.c
+    src/memory.c
+    src/scanner.c
+    src/value.c
     src/vm.c
 )
 
