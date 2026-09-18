@@ -4,6 +4,7 @@
 #include "common.h"
 #include "compiler.h"
 #include "debug.h"
+#include "object.h"
 #include "scanner.h"
 
 typedef struct {
@@ -144,6 +145,11 @@ static void number(void) {
   emitConstant(NUMBER_VAL(value));
 }
 
+static void string(void) {
+  emitConstant(OBJ_VAL(
+      copyString(parser.previous.start + 1, parser.previous.length - 2)));
+}
+
 static void literal(void) {
   switch (parser.previous.type) {
   case TOKEN_FALSE:
@@ -266,7 +272,7 @@ ParseRule rules[] = {[TOKEN_LEFT_PAREN] = {grouping, NULL, PREC_NONE},
                      [TOKEN_LESS_EQUAL] = {NULL, binary, PREC_COMPARISON},
 
                      [TOKEN_IDENTIFIER] = {NULL, NULL, PREC_NONE},
-                     [TOKEN_STRING] = {NULL, NULL, PREC_NONE},
+                     [TOKEN_STRING] = {string, NULL, PREC_NONE},
                      [TOKEN_NUMBER] = {number, NULL, PREC_NONE},
 
                      [TOKEN_AND] = {NULL, NULL, PREC_NONE},

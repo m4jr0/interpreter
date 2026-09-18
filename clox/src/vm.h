@@ -2,6 +2,7 @@
 #define CLOX_VM_H
 
 #include "chunk.h"
+#include "object.h"
 
 #define STACK_MAX 256
 
@@ -11,6 +12,8 @@ typedef struct {
 
   Value stack[STACK_MAX];
   Value *stackTop;
+
+  Obj *objects;
 } VM;
 
 typedef enum {
