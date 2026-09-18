@@ -53,9 +53,13 @@ static void concatenate(void) {
 void initVM(void) {
   resetStack();
   vm.objects = NULL;
+  initTable(&vm.strings);
 }
 
-void freeVM(void) { freeObjects(); }
+void freeVM(void) {
+  freeTable(&vm.strings);
+  freeObjects();
+}
 
 void push(Value value) {
   *vm.stackTop = value;
