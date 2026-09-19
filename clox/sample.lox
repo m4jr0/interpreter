@@ -1,26 +1,19 @@
-var a = "global";
+var a = 0;
 
-{
-    var a = "outer local";
-    var b = 10;
-
-    print a;
-    print b;
-
-    {
-        var a = "inner local";
-        var c = 20;
-
-        print a;
-        print b;
-        print c;
-
-        b = 42;
-        print b;
-    }
-
-    print a;
-    print b;
+if (true) {
+  print "if works";
+} else {
+  print "nope";
 }
 
-print a;
+print false or "or works";
+print true and "and works";
+
+while (a < 3) {
+  print a;
+  a = a + 1;
+}
+
+for (var i = 0; i < 3; i = i + 1) {
+  print i;
+}
