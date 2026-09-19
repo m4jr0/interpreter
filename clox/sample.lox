@@ -1,19 +1,8 @@
-var a = 0;
-
-if (true) {
-  print "if works";
-} else {
-  print "nope";
+fun fib(n) {
+  if (n < 2) return n;
+  return fib(n - 2) + fib(n - 1);
 }
 
-print false or "or works";
-print true and "and works";
-
-while (a < 3) {
-  print a;
-  a = a + 1;
-}
-
-for (var i = 0; i < 3; i = i + 1) {
-  print i;
-}
+var start = clock();
+print fib(35);
+print clock() - start;
