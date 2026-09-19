@@ -103,20 +103,15 @@ bool tableGet(Table *table, ObjString *key, Value *value) {
 }
 
 bool tableSet(Table *table, ObjString *key, Value value) {
-
   if (table->count + 1 > table->capacity * TABLE_MAX_LOAD) {
-
     int capacity = GROW_CAPACITY(table->capacity);
-
     adjustCapacity(table, capacity);
   }
 
   Entry *entry = findEntry(table->entries, table->capacity, key);
-
   bool isNewKey = entry->key == NULL;
 
   if (isNewKey && IS_NIL(entry->value)) {
-
     table->count++;
   }
 
@@ -146,9 +141,7 @@ bool tableDelete(Table *table, ObjString *key) {
 }
 
 void tableAddAll(Table *from, Table *to) {
-
   for (int i = 0; i < from->capacity; i++) {
-
     Entry *entry = &from->entries[i];
 
     if (entry->key != NULL) {
@@ -159,7 +152,6 @@ void tableAddAll(Table *from, Table *to) {
 
 ObjString *tableFindString(Table *table, const char *chars, int length,
                            uint32_t hash) {
-
   if (table->count == 0) {
     return NULL;
   }

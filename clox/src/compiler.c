@@ -1,11 +1,16 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "common.h"
 #include "compiler.h"
 #include "debug.h"
 #include "object.h"
 #include "scanner.h"
+
+// -----------------------------------------------------------------------------
+// Compiler types.
+// -----------------------------------------------------------------------------
 
 typedef struct {
   Token current;
@@ -29,7 +34,7 @@ typedef enum {
   PREC_PRIMARY
 } Precedence;
 
-typedef void (*ParseFn)(void);
+typedef void (*ParseFn)(bool canAssign);
 
 typedef struct {
   ParseFn prefix;
@@ -37,14 +42,63 @@ typedef struct {
   Precedence precedence;
 } ParseRule;
 
-Parser parser;
+typedef struct {
+  Token name;
+  int depth;
+} Local;
 
+typedef struct {
+  Local locals[UINT8_COUNT];
+  int localCount;
+  int scopeDepth;
+} Compiler;
+
+// -----------------------------------------------------------------------------
+// Compiler state.
+// -----------------------------------------------------------------------------
+
+Parser parser;
+Compiler *current = NULL;
 Chunk *compilingChunk;
+
+// -----------------------------------------------------------------------------
+// Forward declarations.
+//
+// These functions participate in the recursive parsing structure or are needed
+// before their definitions because of the Pratt rule table.
+// -----------------------------------------------------------------------------
+
+static void declaration(void);
+static void statement(void);
+static void expression(void);
+
+static void parsePrecedence(Precedence precedence);
+static ParseRule *getRule(TokenType type);
+
+static void variable(bool canAssign);
+
+// -----------------------------------------------------------------------------
+// Chunk access and bytecode emission.
+// -----------------------------------------------------------------------------
 
 static Chunk *currentChunk(void) { return compilingChunk; }
 
-static void errorAt(Token *token, const char *message) {
+static void emitByte(uint8_t byte) {
+  writeChunk(currentChunk(), byte, parser.previous.line);
+}
 
+static void emitBytes(uint8_t byte1, uint8_t byte2) {
+  emitByte(byte1);
+  emitByte(byte2);
+}
+
+static void emitReturn(void) { emitByte(OP_RETURN); }
+
+// -----------------------------------------------------------------------------
+// Error handling.
+// -----------------------------------------------------------------------------
+
+static void errorAt(Token *token, const char *message) {
   if (parser.panicMode) {
     return;
   }
@@ -69,9 +123,12 @@ static void errorAt(Token *token, const char *message) {
 static void error(const char *message) { errorAt(&parser.previous, message); }
 
 static void errorAtCurrent(const char *message) {
-
   errorAt(&parser.current, message);
 }
+
+// -----------------------------------------------------------------------------
+// Token handling.
+// -----------------------------------------------------------------------------
 
 static void advance(void) {
   parser.previous = parser.current;
@@ -88,7 +145,6 @@ static void advance(void) {
 }
 
 static void consume(TokenType type, const char *message) {
-
   if (parser.current.type == type) {
     advance();
     return;
@@ -97,24 +153,53 @@ static void consume(TokenType type, const char *message) {
   errorAtCurrent(message);
 }
 
-static void emitByte(uint8_t byte) {
-  writeChunk(currentChunk(), byte, parser.previous.line);
+static bool check(TokenType type) { return parser.current.type == type; }
+
+static bool match(TokenType type) {
+  if (!check(type)) {
+    return false;
+  }
+
+  advance();
+  return true;
 }
 
-static void emitBytes(uint8_t byte1, uint8_t byte2) {
+static void synchronize(void) {
+  parser.panicMode = false;
 
-  emitByte(byte1);
-  emitByte(byte2);
+  while (parser.current.type != TOKEN_EOF) {
+    if (parser.previous.type == TOKEN_SEMICOLON) {
+      return;
+    }
+
+    switch (parser.current.type) {
+    case TOKEN_CLASS:
+    case TOKEN_FUN:
+    case TOKEN_VAR:
+    case TOKEN_FOR:
+    case TOKEN_IF:
+    case TOKEN_WHILE:
+    case TOKEN_PRINT:
+    case TOKEN_RETURN:
+      return;
+
+    default:
+      break;
+    }
+
+    advance();
+  }
 }
 
-static void emitReturn(void) { emitByte(OP_RETURN); }
+// -----------------------------------------------------------------------------
+// Constants.
+// -----------------------------------------------------------------------------
 
 static uint8_t makeConstant(Value value) {
   int constant = addConstant(currentChunk(), value);
 
   if (constant > UINT8_MAX) {
     error("Too many constants in one chunk.");
-
     return 0;
   }
 
@@ -123,6 +208,21 @@ static uint8_t makeConstant(Value value) {
 
 static void emitConstant(Value value) {
   emitBytes(OP_CONSTANT, makeConstant(value));
+}
+
+static uint8_t identifierConstant(Token *name) {
+  return makeConstant(OBJ_VAL(copyString(name->start, name->length)));
+}
+
+// -----------------------------------------------------------------------------
+// Compiler lifecycle.
+// -----------------------------------------------------------------------------
+
+static void initCompiler(Compiler *compiler) {
+  compiler->localCount = 0;
+  compiler->scopeDepth = 0;
+
+  current = compiler;
 }
 
 static void endCompiler(void) {
@@ -135,22 +235,131 @@ static void endCompiler(void) {
 #endif
 }
 
-static void expression(void);
-static void parsePrecedence(Precedence precedence);
-static ParseRule *getRule(TokenType type);
+// -----------------------------------------------------------------------------
+// Local variables and lexical scopes.
+// -----------------------------------------------------------------------------
 
-static void number(void) {
+static void beginScope(void) { current->scopeDepth++; }
+
+static void endScope(void) {
+  current->scopeDepth--;
+
+  while (current->localCount > 0 &&
+         current->locals[current->localCount - 1].depth > current->scopeDepth) {
+
+    emitByte(OP_POP);
+    current->localCount--;
+  }
+}
+
+static bool identifiersEqual(Token *a, Token *b) {
+  if (a->length != b->length) {
+    return false;
+  }
+
+  return memcmp(a->start, b->start, a->length) == 0;
+}
+
+static void addLocal(Token name) {
+  if (current->localCount == UINT8_COUNT) {
+    error("Too many local variables in function.");
+    return;
+  }
+
+  Local *local = &current->locals[current->localCount++];
+
+  local->name = name;
+  local->depth = -1;
+}
+
+static void declareVariable(void) {
+  if (current->scopeDepth == 0) {
+    return;
+  }
+
+  Token *name = &parser.previous;
+
+  for (int i = current->localCount - 1; i >= 0; i--) {
+    Local *local = &current->locals[i];
+
+    if (local->depth != -1 && local->depth < current->scopeDepth) {
+
+      break;
+    }
+
+    if (identifiersEqual(name, &local->name)) {
+      error("Already a variable with this name in this scope.");
+    }
+  }
+
+  addLocal(*name);
+}
+
+static void markInitialized(void) {
+  current->locals[current->localCount - 1].depth = current->scopeDepth;
+}
+
+static int resolveLocal(Compiler *compiler, Token *name) {
+  for (int i = compiler->localCount - 1; i >= 0; i--) {
+    Local *local = &compiler->locals[i];
+
+    if (identifiersEqual(name, &local->name)) {
+      if (local->depth == -1) {
+        error("Can't read local variable in its own initializer.");
+      }
+
+      return i;
+    }
+  }
+
+  return -1;
+}
+
+// -----------------------------------------------------------------------------
+// Variable declarations.
+// -----------------------------------------------------------------------------
+
+static uint8_t parseVariable(const char *errorMessage) {
+  consume(TOKEN_IDENTIFIER, errorMessage);
+  declareVariable();
+
+  if (current->scopeDepth > 0) {
+    return 0;
+  }
+
+  return identifierConstant(&parser.previous);
+}
+
+static void defineVariable(uint8_t global) {
+  if (current->scopeDepth > 0) {
+    markInitialized();
+    return;
+  }
+
+  emitBytes(OP_DEFINE_GLOBAL, global);
+}
+
+// -----------------------------------------------------------------------------
+// Pratt prefix parse functions.
+// -----------------------------------------------------------------------------
+
+static void number(bool canAssign) {
+  (void)canAssign;
+
   double value = strtod(parser.previous.start, NULL);
-
   emitConstant(NUMBER_VAL(value));
 }
 
-static void string(void) {
+static void string(bool canAssign) {
+  (void)canAssign;
+
   emitConstant(OBJ_VAL(
       copyString(parser.previous.start + 1, parser.previous.length - 2)));
 }
 
-static void literal(void) {
+static void literal(bool canAssign) {
+  (void)canAssign;
+
   switch (parser.previous.type) {
   case TOKEN_FALSE:
     emitByte(OP_FALSE);
@@ -169,13 +378,16 @@ static void literal(void) {
   }
 }
 
-static void grouping(void) {
-  expression();
+static void grouping(bool canAssign) {
+  (void)canAssign;
 
+  expression();
   consume(TOKEN_RIGHT_PAREN, "Expect ')' after expression.");
 }
 
-static void unary(void) {
+static void unary(bool canAssign) {
+  (void)canAssign;
+
   TokenType operatorType = parser.previous.type;
 
   parsePrecedence(PREC_UNARY);
@@ -194,9 +406,42 @@ static void unary(void) {
   }
 }
 
-static void binary(void) {
-  TokenType operatorType = parser.previous.type;
+static void namedVariable(Token name, bool canAssign) {
+  uint8_t getOp;
+  uint8_t setOp;
 
+  int arg = resolveLocal(current, &name);
+
+  if (arg != -1) {
+    getOp = OP_GET_LOCAL;
+    setOp = OP_SET_LOCAL;
+  } else {
+    arg = identifierConstant(&name);
+
+    getOp = OP_GET_GLOBAL;
+    setOp = OP_SET_GLOBAL;
+  }
+
+  if (canAssign && match(TOKEN_EQUAL)) {
+    expression();
+    emitBytes(setOp, (uint8_t)arg);
+  } else {
+    emitBytes(getOp, (uint8_t)arg);
+  }
+}
+
+static void variable(bool canAssign) {
+  namedVariable(parser.previous, canAssign);
+}
+
+// -----------------------------------------------------------------------------
+// Pratt infix parse functions.
+// -----------------------------------------------------------------------------
+
+static void binary(bool canAssign) {
+  (void)canAssign;
+
+  TokenType operatorType = parser.previous.type;
   ParseRule *rule = getRule(operatorType);
 
   parsePrecedence((Precedence)(rule->precedence + 1));
@@ -247,58 +492,66 @@ static void binary(void) {
   }
 }
 
-ParseRule rules[] = {[TOKEN_LEFT_PAREN] = {grouping, NULL, PREC_NONE},
-                     [TOKEN_RIGHT_PAREN] = {NULL, NULL, PREC_NONE},
-                     [TOKEN_LEFT_BRACE] = {NULL, NULL, PREC_NONE},
-                     [TOKEN_RIGHT_BRACE] = {NULL, NULL, PREC_NONE},
-                     [TOKEN_COMMA] = {NULL, NULL, PREC_NONE},
-                     [TOKEN_DOT] = {NULL, NULL, PREC_NONE},
+// -----------------------------------------------------------------------------
+// Pratt parse table.
+// -----------------------------------------------------------------------------
 
-                     [TOKEN_MINUS] = {unary, binary, PREC_TERM},
-                     [TOKEN_PLUS] = {NULL, binary, PREC_TERM},
+static ParseRule rules[] = {
+    [TOKEN_LEFT_PAREN] = {grouping, NULL, PREC_NONE},
+    [TOKEN_RIGHT_PAREN] = {NULL, NULL, PREC_NONE},
+    [TOKEN_LEFT_BRACE] = {NULL, NULL, PREC_NONE},
+    [TOKEN_RIGHT_BRACE] = {NULL, NULL, PREC_NONE},
+    [TOKEN_COMMA] = {NULL, NULL, PREC_NONE},
+    [TOKEN_DOT] = {NULL, NULL, PREC_NONE},
 
-                     [TOKEN_SEMICOLON] = {NULL, NULL, PREC_NONE},
-                     [TOKEN_SLASH] = {NULL, binary, PREC_FACTOR},
-                     [TOKEN_STAR] = {NULL, binary, PREC_FACTOR},
+    [TOKEN_MINUS] = {unary, binary, PREC_TERM},
+    [TOKEN_PLUS] = {NULL, binary, PREC_TERM},
 
-                     [TOKEN_BANG] = {unary, NULL, PREC_NONE},
+    [TOKEN_SEMICOLON] = {NULL, NULL, PREC_NONE},
+    [TOKEN_SLASH] = {NULL, binary, PREC_FACTOR},
+    [TOKEN_STAR] = {NULL, binary, PREC_FACTOR},
 
-                     [TOKEN_BANG_EQUAL] = {NULL, binary, PREC_EQUALITY},
-                     [TOKEN_EQUAL] = {NULL, NULL, PREC_NONE},
-                     [TOKEN_EQUAL_EQUAL] = {NULL, binary, PREC_EQUALITY},
-                     [TOKEN_GREATER] = {NULL, binary, PREC_COMPARISON},
-                     [TOKEN_GREATER_EQUAL] = {NULL, binary, PREC_COMPARISON},
-                     [TOKEN_LESS] = {NULL, binary, PREC_COMPARISON},
-                     [TOKEN_LESS_EQUAL] = {NULL, binary, PREC_COMPARISON},
+    [TOKEN_BANG] = {unary, NULL, PREC_NONE},
+    [TOKEN_BANG_EQUAL] = {NULL, binary, PREC_EQUALITY},
+    [TOKEN_EQUAL] = {NULL, NULL, PREC_NONE},
+    [TOKEN_EQUAL_EQUAL] = {NULL, binary, PREC_EQUALITY},
+    [TOKEN_GREATER] = {NULL, binary, PREC_COMPARISON},
+    [TOKEN_GREATER_EQUAL] = {NULL, binary, PREC_COMPARISON},
+    [TOKEN_LESS] = {NULL, binary, PREC_COMPARISON},
+    [TOKEN_LESS_EQUAL] = {NULL, binary, PREC_COMPARISON},
 
-                     [TOKEN_IDENTIFIER] = {NULL, NULL, PREC_NONE},
-                     [TOKEN_STRING] = {string, NULL, PREC_NONE},
-                     [TOKEN_NUMBER] = {number, NULL, PREC_NONE},
+    [TOKEN_IDENTIFIER] = {variable, NULL, PREC_NONE},
+    [TOKEN_STRING] = {string, NULL, PREC_NONE},
+    [TOKEN_NUMBER] = {number, NULL, PREC_NONE},
 
-                     [TOKEN_AND] = {NULL, NULL, PREC_NONE},
-                     [TOKEN_CLASS] = {NULL, NULL, PREC_NONE},
-                     [TOKEN_ELSE] = {NULL, NULL, PREC_NONE},
-                     [TOKEN_FALSE] = {literal, NULL, PREC_NONE},
-                     [TOKEN_FOR] = {NULL, NULL, PREC_NONE},
-                     [TOKEN_FUN] = {NULL, NULL, PREC_NONE},
-                     [TOKEN_IF] = {NULL, NULL, PREC_NONE},
-                     [TOKEN_NIL] = {literal, NULL, PREC_NONE},
-                     [TOKEN_OR] = {NULL, NULL, PREC_NONE},
-                     [TOKEN_PRINT] = {NULL, NULL, PREC_NONE},
-                     [TOKEN_RETURN] = {NULL, NULL, PREC_NONE},
-                     [TOKEN_SUPER] = {NULL, NULL, PREC_NONE},
-                     [TOKEN_THIS] = {NULL, NULL, PREC_NONE},
-                     [TOKEN_TRUE] = {literal, NULL, PREC_NONE},
-                     [TOKEN_VAR] = {NULL, NULL, PREC_NONE},
-                     [TOKEN_WHILE] = {NULL, NULL, PREC_NONE},
+    [TOKEN_AND] = {NULL, NULL, PREC_NONE},
+    [TOKEN_CLASS] = {NULL, NULL, PREC_NONE},
+    [TOKEN_ELSE] = {NULL, NULL, PREC_NONE},
+    [TOKEN_FALSE] = {literal, NULL, PREC_NONE},
+    [TOKEN_FOR] = {NULL, NULL, PREC_NONE},
+    [TOKEN_FUN] = {NULL, NULL, PREC_NONE},
+    [TOKEN_IF] = {NULL, NULL, PREC_NONE},
+    [TOKEN_NIL] = {literal, NULL, PREC_NONE},
+    [TOKEN_OR] = {NULL, NULL, PREC_NONE},
+    [TOKEN_PRINT] = {NULL, NULL, PREC_NONE},
+    [TOKEN_RETURN] = {NULL, NULL, PREC_NONE},
+    [TOKEN_SUPER] = {NULL, NULL, PREC_NONE},
+    [TOKEN_THIS] = {NULL, NULL, PREC_NONE},
+    [TOKEN_TRUE] = {literal, NULL, PREC_NONE},
+    [TOKEN_VAR] = {NULL, NULL, PREC_NONE},
+    [TOKEN_WHILE] = {NULL, NULL, PREC_NONE},
 
-                     [TOKEN_ERROR] = {NULL, NULL, PREC_NONE},
-                     [TOKEN_EOF] = {NULL, NULL, PREC_NONE}};
+    [TOKEN_ERROR] = {NULL, NULL, PREC_NONE},
+    [TOKEN_EOF] = {NULL, NULL, PREC_NONE},
+};
 
 static ParseRule *getRule(TokenType type) { return &rules[type]; }
 
-static void parsePrecedence(Precedence precedence) {
+// -----------------------------------------------------------------------------
+// Pratt parser.
+// -----------------------------------------------------------------------------
 
+static void parsePrecedence(Precedence precedence) {
   advance();
 
   ParseFn prefixRule = getRule(parser.previous.type)->prefix;
@@ -308,23 +561,100 @@ static void parsePrecedence(Precedence precedence) {
     return;
   }
 
-  prefixRule();
+  bool canAssign = precedence <= PREC_ASSIGNMENT;
+
+  prefixRule(canAssign);
 
   while (precedence <= getRule(parser.current.type)->precedence) {
-
     advance();
 
     ParseFn infixRule = getRule(parser.previous.type)->infix;
+    infixRule(canAssign);
+  }
 
-    infixRule();
+  if (canAssign && match(TOKEN_EQUAL)) {
+    error("Invalid assignment target.");
   }
 }
 
 static void expression(void) { parsePrecedence(PREC_ASSIGNMENT); }
 
-bool compile(const char *source, Chunk *chunk) {
+// -----------------------------------------------------------------------------
+// Statements.
+// -----------------------------------------------------------------------------
 
+static void expressionStatement(void) {
+  expression();
+  consume(TOKEN_SEMICOLON, "Expect ';' after expression.");
+  emitByte(OP_POP);
+}
+
+static void printStatement(void) {
+  expression();
+  consume(TOKEN_SEMICOLON, "Expect ';' after value.");
+  emitByte(OP_PRINT);
+}
+
+static void block(void) {
+  while (!check(TOKEN_RIGHT_BRACE) && !check(TOKEN_EOF)) {
+
+    declaration();
+  }
+
+  consume(TOKEN_RIGHT_BRACE, "Expect '}' after block.");
+}
+
+static void statement(void) {
+  if (match(TOKEN_PRINT)) {
+    printStatement();
+  } else if (match(TOKEN_LEFT_BRACE)) {
+    beginScope();
+    block();
+    endScope();
+  } else {
+    expressionStatement();
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Declarations.
+// -----------------------------------------------------------------------------
+
+static void varDeclaration(void) {
+  uint8_t global = parseVariable("Expect variable name.");
+
+  if (match(TOKEN_EQUAL)) {
+    expression();
+  } else {
+    emitByte(OP_NIL);
+  }
+
+  consume(TOKEN_SEMICOLON, "Expect ';' after variable declaration.");
+
+  defineVariable(global);
+}
+
+static void declaration(void) {
+  if (match(TOKEN_VAR)) {
+    varDeclaration();
+  } else {
+    statement();
+  }
+
+  if (parser.panicMode) {
+    synchronize();
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Public compiler entry point.
+// -----------------------------------------------------------------------------
+
+bool compile(const char *source, Chunk *chunk) {
   initScanner(source);
+
+  Compiler compiler;
+  initCompiler(&compiler);
 
   compilingChunk = chunk;
 
@@ -333,9 +663,9 @@ bool compile(const char *source, Chunk *chunk) {
 
   advance();
 
-  expression();
-
-  consume(TOKEN_EOF, "Expect end of expression.");
+  while (!match(TOKEN_EOF)) {
+    declaration();
+  }
 
   endCompiler();
 
