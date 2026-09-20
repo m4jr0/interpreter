@@ -1,122 +1,219 @@
-print "== methods ==";
+print "== inheritance ==";
+
+class Animal {
+  speak() {
+    print "animal";
+  }
+
+  identify() {
+    return "Animal";
+  }
+}
+
+class Dog < Animal {}
+
+var dog = Dog();
+
+dog.speak();
+// expect: animal
+
+print dog.identify();
+// expect: Animal
+
+
+print "== override ==";
+
+class Cat < Animal {
+  speak() {
+    print "cat";
+  }
+}
+
+var cat = Cat();
+
+cat.speak();
+// expect: cat
+
+print cat.identify();
+// expect: Animal
+
+
+print "== super call ==";
+
+class LoudDog < Dog {
+  speak() {
+    super.speak();
+    print "LOUD";
+  }
+}
+
+var loud = LoudDog();
+
+loud.speak();
+// expect:
+// animal
+// LOUD
+
+
+print "== super with arguments ==";
+
+class Base {
+  describe(value) {
+    return "base " + value;
+  }
+}
+
+class Derived < Base {
+  describe(value) {
+    return super.describe(value);
+  }
+}
+
+print Derived().describe("works");
+// expect: base works
+
+
+print "== inherited initializer ==";
 
 class Person {
   init(name) {
     this.name = name;
   }
 
-  greet(prefix) {
-    print prefix + this.name;
+  greet() {
+    print this.name;
+  }
+}
+
+class Developer < Person {}
+
+var developer = Developer("Vix");
+
+developer.greet();
+// expect: Vix
+
+print developer.name;
+// expect: Vix
+
+
+print "== override initializer ==";
+
+class SpecialDeveloper < Person {
+  init(name, language) {
+    super.init(name);
+    this.language = language;
   }
 
-  getName() {
-    return this.name;
+  describe() {
+    print this.name;
+    print this.language;
+  }
+}
+
+var special = SpecialDeveloper("Aeris", "C++");
+
+special.describe();
+// expect:
+// Aeris
+// C++
+
+
+print "== bound super method ==";
+
+class Parent {
+  method() {
+    print "parent";
+  }
+}
+
+class Child < Parent {
+  getMethod() {
+    return super.method;
   }
 
-  rename(name) {
-    this.name = name;
-    return this;
+  method() {
+    print "child";
+  }
+}
+
+var child = Child();
+var parentMethod = child.getMethod();
+
+parentMethod();
+// expect: parent
+
+child.method();
+// expect: child
+
+
+print "== super keeps this ==";
+
+class BaseCounter {
+  show() {
+    print this.value;
+  }
+}
+
+class Counter < BaseCounter {
+  init(value) {
+    this.value = value;
   }
 
-  makeGreeter() {
+  showParent() {
+    super.show();
+  }
+}
+
+var counter = Counter(42);
+
+counter.showParent();
+// expect: 42
+
+
+print "== lexical super ==";
+
+class A {
+  test() {
+    print "A";
+  }
+}
+
+class B < A {
+  test() {
+    print "B";
+  }
+
+  makeClosure() {
     fun closure() {
-      print this.name;
+      super.test();
     }
+
     return closure;
   }
 }
 
-var alice = Person("Alice");
-var bob = Person("Bob");
+class C < B {
+  test() {
+    print "C";
+  }
+}
 
-alice.greet("Hello ");
-// expect: Hello Alice
-
-bob.greet("Hello ");
-// expect: Hello Bob
-
-print alice.getName();
-// expect: Alice
-
-
-print "== this and mutation ==";
-
-alice.rename("Aeris").greet("Now ");
-// expect: Now Aeris
-
-print alice.name;
-// expect: Aeris
-
-
-print "== bound method ==";
-
-var greet = alice.greet;
-
-greet("Bound ");
-// expect: Bound Aeris
-
-alice = Person("Replacement");
-
-greet("Still ");
-// expect: Still Aeris
-
-
-print "== closure captures this ==";
-
-var closure = bob.makeGreeter();
-
-bob = nil;
+var closure = C().makeClosure();
 
 closure();
+// expect: A
+
+
+print "== field survives inheritance ==";
+
+var inherited = Developer("Bob");
+inherited.language = "C";
+
+print inherited.name;
 // expect: Bob
 
-
-print "== field shadows method ==";
-
-class Shadow {
-  thing() {
-    print "method";
-  }
-}
-
-fun replacement() {
-  print "field";
-}
-
-var shadow = Shadow();
-
-shadow.thing();
-// expect: method
-
-shadow.thing = replacement;
-shadow.thing();
-// expect: field
-
-
-print "== initializer ==";
-
-class Box {
-  init(value) {
-    this.value = value;
-    return;
-  }
-}
-
-var box = Box(42);
-
-print box;
-// expect: Box instance
-
-print box.value;
-// expect: 42
-
-
-print "== class without initializer ==";
-
-class Empty {}
-
-print Empty();
-// expect: Empty instance
+print inherited.language;
+// expect: C
 
 
 print "== DONE ==";
