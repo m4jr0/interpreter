@@ -1,17 +1,247 @@
-fun makeCounter() {
-  var i = 0;
-  fun count() {
-    i = i + 1;
-    print i;
-  }
-  return count;
+print "== class object ==";
+
+class Brioche {}
+
+print Brioche;
+// expect: Brioche
+
+
+print "== instance creation ==";
+
+var brioche = Brioche();
+
+print brioche;
+// expect: Brioche instance
+
+
+print "== fields ==";
+
+brioche.flavor = "chocolate";
+brioche.price = 3;
+brioche.quantity = 4;
+
+print brioche.flavor;
+// expect: chocolate
+
+print brioche.price;
+// expect: 3
+
+print brioche.quantity;
+// expect: 4
+
+
+print "== field expression ==";
+
+print brioche.price * brioche.quantity;
+// expect: 12
+
+
+print "== overwrite field ==";
+
+brioche.price = 5;
+
+print brioche.price;
+// expect: 5
+
+
+print "== assignment returns value ==";
+
+print brioche.price = 7;
+// expect: 7
+
+print brioche.price;
+// expect: 7
+
+
+print "== arbitrary field types ==";
+
+brioche.number = 123;
+brioche.boolean = true;
+brioche.nothing = nil;
+brioche.text = "hello";
+
+print brioche.number;
+// expect: 123
+
+print brioche.boolean;
+// expect: true
+
+print brioche.nothing;
+// expect: nil
+
+print brioche.text;
+// expect: hello
+
+
+print "== fields created dynamically ==";
+
+brioche.createdLater = "yep";
+
+print brioche.createdLater;
+// expect: yep
+
+
+print "== independent instances ==";
+
+var first = Brioche();
+var second = Brioche();
+
+first.value = 10;
+second.value = 20;
+
+print first.value;
+// expect: 10
+
+print second.value;
+// expect: 20
+
+
+print "== same field names on different classes ==";
+
+class Croissant {}
+
+var croissant = Croissant();
+
+brioche.kind = "brioche";
+croissant.kind = "croissant";
+
+print brioche.kind;
+// expect: brioche
+
+print croissant.kind;
+// expect: croissant
+
+
+print "== instance references ==";
+
+first.other = second;
+second.value = 42;
+
+print first.other.value;
+// expect: 42
+
+
+print "== chained property access ==";
+
+class Box {}
+
+var outer = Box();
+var inner = Box();
+
+outer.inner = inner;
+inner.answer = 42;
+
+print outer.inner.answer;
+// expect: 42
+
+
+print "== chained property assignment ==";
+
+outer.inner.answer = 100;
+
+print inner.answer;
+// expect: 100
+
+print outer.inner.answer;
+// expect: 100
+
+
+print "== class stored in variable ==";
+
+var Constructor = Box;
+var another = Constructor();
+
+another.test = "works";
+
+print another.test;
+// expect: works
+
+print another;
+// expect: Box instance
+
+
+print "== class stored in field ==";
+
+outer.klass = Brioche;
+
+var strangeBrioche = outer.klass();
+strangeBrioche.test = "also works";
+
+print strangeBrioche;
+// expect: Brioche instance
+
+print strangeBrioche.test;
+// expect: also works
+
+
+print "== closure stored in field ==";
+
+fun sayHello() {
+  print "hello from field";
 }
 
-var a = makeCounter();
-var b = makeCounter();
+brioche.callback = sayHello;
+brioche.callback();
+// expect: hello from field
 
-a();
-a();
-b();
-a();
-b();
+
+print "== assignment associativity ==";
+
+var third = Box();
+var fourth = Box();
+
+third.value = fourth.value = 999;
+
+print third.value;
+// expect: 999
+
+print fourth.value;
+// expect: 999
+
+
+print "== property participates in expressions ==";
+
+third.a = 10;
+third.b = 20;
+
+print third.a + third.b;
+// expect: 30
+
+print third.a < third.b;
+// expect: true
+
+print third.a == 10;
+// expect: true
+
+
+print "== GC reachability through fields ==";
+
+fun makeClosure() {
+  var captured = "still alive";
+
+  fun closure() {
+    print captured;
+  }
+
+  return closure;
+}
+
+var holder = Box();
+holder.closure = makeClosure();
+
+holder.closure();
+// expect: still alive
+
+
+print "== GC reachability through nested instances ==";
+
+var root = Box();
+root.child = Box();
+root.child.child = Box();
+root.child.child.message = "reachable";
+
+print root.child.child.message;
+// expect: reachable
+
+
+print "== DONE ==";
