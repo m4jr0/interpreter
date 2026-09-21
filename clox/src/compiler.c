@@ -5,6 +5,7 @@
 #include "common.h"
 #include "compiler.h"
 #include "debug.h"
+#include "ir.h"
 #include "memory.h"
 #include "object.h"
 #include "scanner.h"
@@ -70,6 +71,7 @@ typedef struct Compiler {
   int localCount;
   Upvalue upvalues[UINT8_COUNT];
   int scopeDepth;
+  IRFunction ir;
 } Compiler;
 
 typedef struct ClassCompiler {
@@ -109,60 +111,36 @@ static void variable(bool canAssign);
 static uint8_t argumentList(void);
 
 // -----------------------------------------------------------------------------
-// Chunk access and bytecode emission.
+// IR emission.
 // -----------------------------------------------------------------------------
 
 static Chunk *currentChunk(void) { return &current->function->chunk; }
 
-static void emitByte(uint8_t byte) {
-  writeChunk(currentChunk(), byte, parser.previous.line);
+static void emitOp(IROp op) {
+  emitIRInstruction(&current->ir, op, parser.previous.line);
 }
 
-static void emitBytes(uint8_t byte1, uint8_t byte2) {
-  emitByte(byte1);
-  emitByte(byte2);
+static void emitOperand(IROp op, int operand) {
+  emitIROperand(&current->ir, op, operand, parser.previous.line);
 }
 
-static int emitJump(uint8_t instruction) {
-  emitByte(instruction);
-  emitByte(0xff);
-  emitByte(0xff);
-
-  return currentChunk()->count - 2;
+static int emitJump(IROp op) {
+  return emitIRJump(&current->ir, op, parser.previous.line);
 }
 
-static void patchJump(int offset) {
-  int jump = currentChunk()->count - offset - 2;
-
-  if (jump > UINT16_MAX) {
-    error("Too much code to jump over.");
-  }
-
-  currentChunk()->code[offset] = (jump >> 8) & 0xff;
-  currentChunk()->code[offset + 1] = jump & 0xff;
+static void patchJump(int instruction) {
+  patchIRJump(&current->ir, instruction, currentIRPosition(&current->ir));
 }
 
 static void emitLoop(int loopStart) {
-  emitByte(OP_LOOP);
-
-  int offset = currentChunk()->count - loopStart + 2;
-
-  if (offset > UINT16_MAX) {
-    error("Loop body too large.");
-  }
-
-  emitByte((offset >> 8) & 0xff);
-  emitByte(offset & 0xff);
+  int jump = emitIRJump(&current->ir, IR_JUMP, parser.previous.line);
+  patchIRJump(&current->ir, jump, loopStart);
 }
 
 static void emitReturn(void) {
-  if (current->type == TYPE_INITIALIZER) {
-    emitBytes(OP_GET_LOCAL, 0);
-  } else {
-    emitByte(OP_NIL);
-  }
-
-  emitByte(OP_RETURN);
+  if (current->type == TYPE_INITIALIZER) emitOperand(IR_LOAD_LOCAL, 0);
+  else emitOp(IR_NIL);
+  emitOp(IR_RETURN);
 }
 
 // -----------------------------------------------------------------------------
@@ -277,7 +255,7 @@ static uint8_t makeConstant(Value value) {
 }
 
 static void emitConstant(Value value) {
-  emitBytes(OP_CONSTANT, makeConstant(value));
+  emitOperand(IR_CONSTANT, makeConstant(value));
 }
 
 static uint8_t identifierConstant(Token *name) {
@@ -294,6 +272,7 @@ static void initCompiler(Compiler *compiler, FunctionType type) {
   compiler->type = type;
   compiler->localCount = 0;
   compiler->scopeDepth = 0;
+  initIRFunction(&compiler->ir);
 
   compiler->function = newFunction();
   current = compiler;
@@ -321,6 +300,32 @@ static ObjFunction *endCompiler(void) {
 
   ObjFunction *function = current->function;
 
+  sealIRFunction(&current->ir);
+  if (!parser.hadError &&
+      !buildIRValues(&current->ir, function->arity + 1)) {
+    error("Failed to build explicit IR values.");
+  }
+
+#ifdef DEBUG_PRINT_IR
+  if (!parser.hadError) {
+    printIRFunction(&current->ir, currentChunk(),
+                    function->name != NULL ? function->name->chars
+                                           : "<script>");
+  }
+#endif
+
+  if (!parser.hadError) {
+    Chunk lowered;
+    if (!lowerIRToChunk(&current->ir, currentChunk(), &lowered)) {
+      error("Failed to lower IR.");
+    } else {
+      freeChunk(currentChunk());
+      function->chunk = lowered;
+    }
+  }
+
+  freeIRFunction(&current->ir);
+
 #ifdef DEBUG_PRINT_CODE
   if (!parser.hadError) {
     disassembleChunk(currentChunk(), function->name != NULL
@@ -345,9 +350,9 @@ static void endScope(void) {
   while (current->localCount > 0 &&
          current->locals[current->localCount - 1].depth > current->scopeDepth) {
     if (current->locals[current->localCount - 1].isCaptured) {
-      emitByte(OP_CLOSE_UPVALUE);
+      emitOp(IR_CLOSE_UPVALUE);
     } else {
-      emitByte(OP_POP);
+      emitOp(IR_POP);
     }
 
     current->localCount--;
@@ -483,7 +488,7 @@ static void defineVariable(uint8_t global) {
     return;
   }
 
-  emitBytes(OP_DEFINE_GLOBAL, global);
+  emitOperand(IR_DEFINE_GLOBAL, global);
 }
 
 // -----------------------------------------------------------------------------
@@ -509,15 +514,15 @@ static void literal(bool canAssign) {
 
   switch (parser.previous.type) {
   case TOKEN_FALSE:
-    emitByte(OP_FALSE);
+    emitOp(IR_FALSE);
     break;
 
   case TOKEN_NIL:
-    emitByte(OP_NIL);
+    emitOp(IR_NIL);
     break;
 
   case TOKEN_TRUE:
-    emitByte(OP_TRUE);
+    emitOp(IR_TRUE);
     break;
 
   default:
@@ -541,11 +546,11 @@ static void unary(bool canAssign) {
 
   switch (operatorType) {
   case TOKEN_BANG:
-    emitByte(OP_NOT);
+    emitOp(IR_NOT);
     break;
 
   case TOKEN_MINUS:
-    emitByte(OP_NEGATE);
+    emitOp(IR_NEGATE);
     break;
 
   default:
@@ -554,28 +559,28 @@ static void unary(bool canAssign) {
 }
 
 static void namedVariable(Token name, bool canAssign) {
-  uint8_t getOp;
-  uint8_t setOp;
+  IROp getOp;
+  IROp setOp;
 
   int arg = resolveLocal(current, &name);
 
   if (arg != -1) {
-    getOp = OP_GET_LOCAL;
-    setOp = OP_SET_LOCAL;
+    getOp = IR_LOAD_LOCAL;
+    setOp = IR_STORE_LOCAL;
   } else if ((arg = resolveUpvalue(current, &name)) != -1) {
-    getOp = OP_GET_UPVALUE;
-    setOp = OP_SET_UPVALUE;
+    getOp = IR_LOAD_UPVALUE;
+    setOp = IR_STORE_UPVALUE;
   } else {
     arg = identifierConstant(&name);
-    getOp = OP_GET_GLOBAL;
-    setOp = OP_SET_GLOBAL;
+    getOp = IR_LOAD_GLOBAL;
+    setOp = IR_STORE_GLOBAL;
   }
 
   if (canAssign && match(TOKEN_EQUAL)) {
     expression();
-    emitBytes(setOp, (uint8_t)arg);
+    emitOperand(setOp, arg);
   } else {
-    emitBytes(getOp, (uint8_t)arg);
+    emitOperand(getOp, arg);
   }
 }
 
@@ -608,20 +613,20 @@ static void super_(bool canAssign) {
   if (match(TOKEN_LEFT_PAREN)) {
     uint8_t argCount = argumentList();
     namedVariable(syntheticToken("super"), false);
-    emitBytes(OP_SUPER_INVOKE, name);
-    emitByte(argCount);
+    emitIRInvoke(&current->ir, IR_SUPER_INVOKE, name, argCount,
+                 parser.previous.line);
   } else {
     namedVariable(syntheticToken("super"), false);
-    emitBytes(OP_GET_SUPER, name);
+    emitOperand(IR_GET_SUPER, name);
   }
 }
 
 static void and_(bool canAssign) {
   (void)canAssign;
 
-  int endJump = emitJump(OP_JUMP_IF_FALSE);
+  int endJump = emitJump(IR_BRANCH);
 
-  emitByte(OP_POP);
+  emitOp(IR_POP);
   parsePrecedence(PREC_AND);
 
   patchJump(endJump);
@@ -630,12 +635,12 @@ static void and_(bool canAssign) {
 static void or_(bool canAssign) {
   (void)canAssign;
 
-  int elseJump = emitJump(OP_JUMP_IF_FALSE);
-  int endJump = emitJump(OP_JUMP);
+  int elseJump = emitJump(IR_BRANCH);
+  int endJump = emitJump(IR_JUMP);
 
   patchJump(elseJump);
 
-  emitByte(OP_POP);
+  emitOp(IR_POP);
   parsePrecedence(PREC_OR);
 
   patchJump(endJump);
@@ -673,7 +678,7 @@ static void call(bool canAssign) {
   (void)canAssign;
 
   uint8_t argCount = argumentList();
-  emitBytes(OP_CALL, argCount);
+  emitOperand(IR_CALL, argCount);
 }
 
 static void dot(bool canAssign) {
@@ -682,13 +687,13 @@ static void dot(bool canAssign) {
 
   if (canAssign && match(TOKEN_EQUAL)) {
     expression();
-    emitBytes(OP_SET_PROPERTY, name);
+    emitOperand(IR_SET_PROPERTY, name);
   } else if (match(TOKEN_LEFT_PAREN)) {
     uint8_t argCount = argumentList();
-    emitBytes(OP_INVOKE, name);
-    emitByte(argCount);
+    emitIRInvoke(&current->ir, IR_INVOKE, name, argCount,
+                 parser.previous.line);
   } else {
-    emitBytes(OP_GET_PROPERTY, name);
+    emitOperand(IR_GET_PROPERTY, name);
   }
 }
 
@@ -702,43 +707,46 @@ static void binary(bool canAssign) {
 
   switch (operatorType) {
   case TOKEN_BANG_EQUAL:
-    emitBytes(OP_EQUAL, OP_NOT);
+    emitOp(IR_EQUAL);
+    emitOp(IR_NOT);
     break;
 
   case TOKEN_EQUAL_EQUAL:
-    emitByte(OP_EQUAL);
+    emitOp(IR_EQUAL);
     break;
 
   case TOKEN_GREATER:
-    emitByte(OP_GREATER);
+    emitOp(IR_GREATER);
     break;
 
   case TOKEN_GREATER_EQUAL:
-    emitBytes(OP_LESS, OP_NOT);
+    emitOp(IR_LESS);
+    emitOp(IR_NOT);
     break;
 
   case TOKEN_LESS:
-    emitByte(OP_LESS);
+    emitOp(IR_LESS);
     break;
 
   case TOKEN_LESS_EQUAL:
-    emitBytes(OP_GREATER, OP_NOT);
+    emitOp(IR_GREATER);
+    emitOp(IR_NOT);
     break;
 
   case TOKEN_PLUS:
-    emitByte(OP_ADD);
+    emitOp(IR_ADD);
     break;
 
   case TOKEN_MINUS:
-    emitByte(OP_SUBTRACT);
+    emitOp(IR_SUBTRACT);
     break;
 
   case TOKEN_STAR:
-    emitByte(OP_MULTIPLY);
+    emitOp(IR_MULTIPLY);
     break;
 
   case TOKEN_SLASH:
-    emitByte(OP_DIVIDE);
+    emitOp(IR_DIVIDE);
     break;
 
   default:
@@ -839,13 +847,13 @@ static void expression(void) { parsePrecedence(PREC_ASSIGNMENT); }
 static void expressionStatement(void) {
   expression();
   consume(TOKEN_SEMICOLON, "Expect ';' after expression.");
-  emitByte(OP_POP);
+  emitOp(IR_POP);
 }
 
 static void printStatement(void) {
   expression();
   consume(TOKEN_SEMICOLON, "Expect ';' after value.");
-  emitByte(OP_PRINT);
+  emitOp(IR_PRINT);
 }
 
 static void block(void) {
@@ -861,15 +869,15 @@ static void ifStatement(void) {
   expression();
   consume(TOKEN_RIGHT_PAREN, "Expect ')' after condition.");
 
-  int thenJump = emitJump(OP_JUMP_IF_FALSE);
-  emitByte(OP_POP);
+  int thenJump = emitJump(IR_BRANCH);
+  emitOp(IR_POP);
 
   statement();
 
-  int elseJump = emitJump(OP_JUMP);
+  int elseJump = emitJump(IR_JUMP);
 
   patchJump(thenJump);
-  emitByte(OP_POP);
+  emitOp(IR_POP);
 
   if (match(TOKEN_ELSE)) {
     statement();
@@ -879,20 +887,20 @@ static void ifStatement(void) {
 }
 
 static void whileStatement(void) {
-  int loopStart = currentChunk()->count;
+  int loopStart = currentIRPosition(&current->ir);
 
   consume(TOKEN_LEFT_PAREN, "Expect '(' after 'while'.");
   expression();
   consume(TOKEN_RIGHT_PAREN, "Expect ')' after condition.");
 
-  int exitJump = emitJump(OP_JUMP_IF_FALSE);
-  emitByte(OP_POP);
+  int exitJump = emitJump(IR_BRANCH);
+  emitOp(IR_POP);
 
   statement();
   emitLoop(loopStart);
 
   patchJump(exitJump);
-  emitByte(OP_POP);
+  emitOp(IR_POP);
 }
 
 static void forStatement(void) {
@@ -908,23 +916,23 @@ static void forStatement(void) {
     expressionStatement();
   }
 
-  int loopStart = currentChunk()->count;
+  int loopStart = currentIRPosition(&current->ir);
   int exitJump = -1;
 
   if (!match(TOKEN_SEMICOLON)) {
     expression();
     consume(TOKEN_SEMICOLON, "Expect ';' after loop condition.");
 
-    exitJump = emitJump(OP_JUMP_IF_FALSE);
-    emitByte(OP_POP);
+    exitJump = emitJump(IR_BRANCH);
+    emitOp(IR_POP);
   }
 
   if (!match(TOKEN_RIGHT_PAREN)) {
-    int bodyJump = emitJump(OP_JUMP);
-    int incrementStart = currentChunk()->count;
+    int bodyJump = emitJump(IR_JUMP);
+    int incrementStart = currentIRPosition(&current->ir);
 
     expression();
-    emitByte(OP_POP);
+    emitOp(IR_POP);
     consume(TOKEN_RIGHT_PAREN, "Expect ')' after for clauses.");
 
     emitLoop(loopStart);
@@ -938,7 +946,7 @@ static void forStatement(void) {
 
   if (exitJump != -1) {
     patchJump(exitJump);
-    emitByte(OP_POP);
+    emitOp(IR_POP);
   }
 
   endScope();
@@ -958,7 +966,7 @@ static void returnStatement(void) {
 
     expression();
     consume(TOKEN_SEMICOLON, "Expect ';' after return value.");
-    emitByte(OP_RETURN);
+    emitOp(IR_RETURN);
   }
 }
 
@@ -1013,12 +1021,13 @@ static void function(FunctionType type) {
   block();
 
   ObjFunction *function = endCompiler();
-  emitBytes(OP_CLOSURE, makeConstant(OBJ_VAL(function)));
-
+  IRUpvalueCapture captures[UINT8_COUNT];
   for (int i = 0; i < function->upvalueCount; i++) {
-    emitByte(compiler.upvalues[i].isLocal ? 1 : 0);
-    emitByte(compiler.upvalues[i].index);
+    captures[i].isLocal = compiler.upvalues[i].isLocal;
+    captures[i].index = compiler.upvalues[i].index;
   }
+  emitIRClosure(&current->ir, makeConstant(OBJ_VAL(function)), captures,
+                function->upvalueCount, parser.previous.line);
 }
 
 static void method(void) {
@@ -1032,7 +1041,7 @@ static void method(void) {
   }
 
   function(type);
-  emitBytes(OP_METHOD, constant);
+  emitOperand(IR_METHOD, constant);
 }
 
 static void funDeclaration(void) {
@@ -1049,7 +1058,7 @@ static void varDeclaration(void) {
   if (match(TOKEN_EQUAL)) {
     expression();
   } else {
-    emitByte(OP_NIL);
+    emitOp(IR_NIL);
   }
 
   consume(TOKEN_SEMICOLON, "Expect ';' after variable declaration.");
@@ -1062,7 +1071,7 @@ static void classDeclaration(void) {
   uint8_t nameConstant = identifierConstant(&parser.previous);
 
   declareVariable();
-  emitBytes(OP_CLASS, nameConstant);
+  emitOperand(IR_CLASS, nameConstant);
   defineVariable(nameConstant);
 
   ClassCompiler classCompiler;
@@ -1083,7 +1092,7 @@ static void classDeclaration(void) {
     defineVariable(0);
 
     namedVariable(className, false);
-    emitByte(OP_INHERIT);
+    emitOp(IR_INHERIT);
     classCompiler.hasSuperclass = true;
   }
 
@@ -1096,7 +1105,7 @@ static void classDeclaration(void) {
   }
 
   consume(TOKEN_RIGHT_BRACE, "Expect '}' after class body.");
-  emitByte(OP_POP);
+  emitOp(IR_POP);
 
   if (classCompiler.hasSuperclass) {
     endScope();
