@@ -468,7 +468,7 @@ static bool simulateInstruction(IRFunction *function,
   return false;
 }
 
-bool buildIRValues(IRFunction *function, int initialStackDepth) {
+bool materializeIRValues(IRFunction *function, int initialStackDepth) {
   if (function->blockCount == 0) return true;
   if (initialStackDepth < 0 || function->entry == IR_NO_BLOCK) return false;
 
@@ -543,180 +543,6 @@ bool buildIRValues(IRFunction *function, int initialStackDepth) {
   return true;
 }
 
-static int encodedSize(const IRInstruction *instruction) {
-  switch (instruction->op) {
-  case IR_CONSTANT:
-  case IR_LOAD_LOCAL:
-  case IR_STORE_LOCAL:
-  case IR_LOAD_GLOBAL:
-  case IR_DEFINE_GLOBAL:
-  case IR_STORE_GLOBAL:
-  case IR_LOAD_UPVALUE:
-  case IR_STORE_UPVALUE:
-  case IR_GET_PROPERTY:
-  case IR_SET_PROPERTY:
-  case IR_GET_SUPER:
-  case IR_CALL:
-  case IR_CLASS:
-  case IR_METHOD:
-    return 2;
-  case IR_INVOKE:
-  case IR_SUPER_INVOKE:
-  case IR_JUMP:
-  case IR_BRANCH:
-    return 3;
-  case IR_CLOSURE:
-    return 2 + instruction->captureCount * 2;
-  default:
-    return 1;
-  }
-}
-
-static OpCode bytecodeOp(IROp op) {
-  switch (op) {
-  case IR_CONSTANT: return OP_CONSTANT;
-  case IR_NIL: return OP_NIL;
-  case IR_TRUE: return OP_TRUE;
-  case IR_FALSE: return OP_FALSE;
-  case IR_POP: return OP_POP;
-  case IR_LOAD_LOCAL: return OP_GET_LOCAL;
-  case IR_STORE_LOCAL: return OP_SET_LOCAL;
-  case IR_LOAD_GLOBAL: return OP_GET_GLOBAL;
-  case IR_DEFINE_GLOBAL: return OP_DEFINE_GLOBAL;
-  case IR_STORE_GLOBAL: return OP_SET_GLOBAL;
-  case IR_LOAD_UPVALUE: return OP_GET_UPVALUE;
-  case IR_STORE_UPVALUE: return OP_SET_UPVALUE;
-  case IR_GET_PROPERTY: return OP_GET_PROPERTY;
-  case IR_SET_PROPERTY: return OP_SET_PROPERTY;
-  case IR_GET_SUPER: return OP_GET_SUPER;
-  case IR_INVOKE: return OP_INVOKE;
-  case IR_SUPER_INVOKE: return OP_SUPER_INVOKE;
-  case IR_EQUAL: return OP_EQUAL;
-  case IR_GREATER: return OP_GREATER;
-  case IR_LESS: return OP_LESS;
-  case IR_ADD: return OP_ADD;
-  case IR_SUBTRACT: return OP_SUBTRACT;
-  case IR_MULTIPLY: return OP_MULTIPLY;
-  case IR_DIVIDE: return OP_DIVIDE;
-  case IR_NOT: return OP_NOT;
-  case IR_NEGATE: return OP_NEGATE;
-  case IR_PRINT: return OP_PRINT;
-  case IR_BRANCH: return OP_JUMP_IF_FALSE;
-  case IR_CALL: return OP_CALL;
-  case IR_CLOSURE: return OP_CLOSURE;
-  case IR_CLOSE_UPVALUE: return OP_CLOSE_UPVALUE;
-  case IR_RETURN: return OP_RETURN;
-  case IR_CLASS: return OP_CLASS;
-  case IR_INHERIT: return OP_INHERIT;
-  case IR_METHOD: return OP_METHOD;
-  case IR_JUMP: return OP_JUMP;
-  }
-  return OP_RETURN;
-}
-
-static void writeByte(Chunk *out, int value, int line) {
-  writeChunk(out, (uint8_t)value, line);
-}
-
-bool lowerIRToChunk(const IRFunction *function, const Chunk *constants,
-                    Chunk *out) {
-  initChunk(out);
-  for (int i = 0; i < constants->constants.count; i++) {
-    addConstant(out, constants->constants.values[i]);
-  }
-
-  int *blockOffsets = malloc(sizeof(int) * (size_t)function->blockCount);
-  if (blockOffsets == NULL) exit(1);
-  int offset = 0;
-  for (int i = 0; i < function->blockCount; i++) {
-    blockOffsets[i] = offset;
-    const IRBlock *block = &function->blocks[i];
-    for (int j = 0; j < block->instructionCount; j++) {
-      const IRInstruction *instruction =
-          &function->instructions[block->firstInstruction + j];
-      if (!instruction->removed) offset += encodedSize(instruction);
-    }
-  }
-
-  for (int i = 0; i < function->blockCount; i++) {
-    const IRBlock *block = &function->blocks[i];
-    for (int j = 0; j < block->instructionCount; j++) {
-      const IRInstruction *instruction =
-          &function->instructions[block->firstInstruction + j];
-      if (instruction->removed) continue;
-
-      int instructionOffset = out->count;
-      if (instruction->op == IR_JUMP || instruction->op == IR_BRANCH) {
-        if (instruction->target < 0 ||
-            instruction->target >= function->blockCount) {
-          free(blockOffsets);
-          freeChunk(out);
-          return false;
-        }
-        int targetOffset = blockOffsets[instruction->target];
-        bool backward = targetOffset <= instructionOffset;
-        if (instruction->op == IR_BRANCH && backward) {
-          free(blockOffsets);
-          freeChunk(out);
-          return false;
-        }
-        OpCode op = instruction->op == IR_BRANCH
-                        ? OP_JUMP_IF_FALSE
-                        : backward ? OP_LOOP : OP_JUMP;
-        int distance = backward ? instructionOffset + 3 - targetOffset
-                                : targetOffset - instructionOffset - 3;
-        if (distance < 0 || distance > UINT16_MAX) {
-          free(blockOffsets);
-          freeChunk(out);
-          return false;
-        }
-        writeByte(out, op, instruction->line);
-        writeByte(out, (distance >> 8) & 0xff, instruction->line);
-        writeByte(out, distance & 0xff, instruction->line);
-        continue;
-      }
-
-      writeByte(out, bytecodeOp(instruction->op), instruction->line);
-      switch (instruction->op) {
-      case IR_CONSTANT:
-      case IR_LOAD_LOCAL:
-      case IR_STORE_LOCAL:
-      case IR_LOAD_GLOBAL:
-      case IR_DEFINE_GLOBAL:
-      case IR_STORE_GLOBAL:
-      case IR_LOAD_UPVALUE:
-      case IR_STORE_UPVALUE:
-      case IR_GET_PROPERTY:
-      case IR_SET_PROPERTY:
-      case IR_GET_SUPER:
-      case IR_CALL:
-      case IR_CLASS:
-      case IR_METHOD:
-        writeByte(out, instruction->operand, instruction->line);
-        break;
-      case IR_INVOKE:
-      case IR_SUPER_INVOKE:
-        writeByte(out, instruction->operand, instruction->line);
-        writeByte(out, instruction->operand2, instruction->line);
-        break;
-      case IR_CLOSURE:
-        writeByte(out, instruction->operand, instruction->line);
-        for (int c = 0; c < instruction->captureCount; c++) {
-          writeByte(out, instruction->captures[c].isLocal ? 1 : 0,
-                    instruction->line);
-          writeByte(out, instruction->captures[c].index, instruction->line);
-        }
-        break;
-      default:
-        break;
-      }
-    }
-  }
-
-  free(blockOffsets);
-  return true;
-}
-
 static const char *opName(IROp op) {
   static const char *names[] = {
       "constant",       "nil",          "true",         "false",
@@ -776,8 +602,8 @@ static void printBlockTarget(const IRFunction *function,
   printf(")");
 }
 
-void printIRFunction(const IRFunction *function, const Chunk *constants,
-                     const char *name) {
+void printIRFunction(const IRFunction *function,
+                     const ValueArray *constants, const char *name) {
   printf("== IR %s ==\n", name != NULL ? name : "<script>");
   for (int i = 0; i < function->blockCount; i++) {
     const IRBlock *block = &function->blocks[i];
@@ -836,9 +662,9 @@ void printIRFunction(const IRFunction *function, const Chunk *constants,
       }
 
       if (instruction->op == IR_CONSTANT && instruction->operand >= 0 &&
-          instruction->operand < constants->constants.count) {
+          instruction->operand < constants->count) {
         printf(" ; ");
-        printValue(constants->constants.values[instruction->operand]);
+        printValue(constants->values[instruction->operand]);
       }
       printf("\n");
     }

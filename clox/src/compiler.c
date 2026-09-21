@@ -9,6 +9,7 @@
 #include "memory.h"
 #include "object.h"
 #include "scanner.h"
+#include "stackifier.h"
 
 // -----------------------------------------------------------------------------
 // Compiler types.
@@ -302,26 +303,33 @@ static ObjFunction *endCompiler(void) {
 
   sealIRFunction(&current->ir);
   if (!parser.hadError &&
-      !buildIRValues(&current->ir, function->arity + 1)) {
+      !materializeIRValues(&current->ir, function->arity + 1)) {
     error("Failed to build explicit IR values.");
   }
 
 #ifdef DEBUG_PRINT_IR
   if (!parser.hadError) {
-    printIRFunction(&current->ir, currentChunk(),
+    printIRFunction(&current->ir, &currentChunk()->constants,
                     function->name != NULL ? function->name->chars
                                            : "<script>");
   }
 #endif
 
   if (!parser.hadError) {
-    Chunk lowered;
-    if (!lowerIRToChunk(&current->ir, currentChunk(), &lowered)) {
-      error("Failed to lower IR.");
+    IRStackFunction stackFunction;
+    initIRStackFunction(&stackFunction);
+    if (!stackifyIR(&current->ir, &stackFunction)) {
+      error("Failed to stackify IR.");
     } else {
-      freeChunk(currentChunk());
-      function->chunk = lowered;
+      Chunk lowered;
+      if (!lowerStackFunctionToChunk(&stackFunction, currentChunk(), &lowered)) {
+        error("Failed to lower stack IR.");
+      } else {
+        freeChunk(currentChunk());
+        function->chunk = lowered;
+      }
     }
+    freeIRStackFunction(&stackFunction);
   }
 
   freeIRFunction(&current->ir);

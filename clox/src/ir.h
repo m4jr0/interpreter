@@ -1,8 +1,8 @@
 #ifndef CLOX_IR_H
 #define CLOX_IR_H
 
-#include "chunk.h"
 #include "common.h"
+#include "value.h"
 
 typedef int IRBlockId;
 typedef int IRValue;
@@ -109,11 +109,9 @@ void emitIRClosure(IRFunction *function, int constant,
                    const IRUpvalueCapture *captures, int captureCount,
                    int line);
 void sealIRFunction(IRFunction *function);
-bool buildIRValues(IRFunction *function, int initialStackDepth);
+bool materializeIRValues(IRFunction *function, int initialStackDepth);
 void rebuildIRControlFlow(IRFunction *function);
-bool lowerIRToChunk(const IRFunction *function, const Chunk *constants,
-                    Chunk *out);
-void printIRFunction(const IRFunction *function, const Chunk *constants,
-                     const char *name);
+void printIRFunction(const IRFunction *function,
+                     const ValueArray *constants, const char *name);
 
 #endif
