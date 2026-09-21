@@ -26,6 +26,12 @@ void freeIRFunction(IRFunction *function) {
     free(function->blocks[i].successors);
     free(function->blocks[i].entryValues);
     free(function->blocks[i].parameters);
+    if (function->blocks[i].incomingValues != NULL) {
+      for (int p = 0; p < function->blocks[i].predecessorCount; p++) {
+        free(function->blocks[i].incomingValues[p]);
+      }
+    }
+    free(function->blocks[i].incomingValues);
   }
   free(function->instructions);
   free(function->blocks);
@@ -128,6 +134,7 @@ static IRBlockId createBlock(IRFunction *function, int firstInstruction) {
   block->successorCapacity = 0;
   block->entryValues = NULL;
   block->parameters = NULL;
+  block->incomingValues = NULL;
   block->stackDepth = -1;
   if (function->entry == IR_NO_BLOCK) function->entry = id;
   return id;
@@ -283,35 +290,50 @@ static bool pushValue(IRValue **stack, int *depth, int *capacity,
   return true;
 }
 
-static bool mergeBlockStack(IRFunction *function, IRBlock *block,
-                            const IRValue *incoming, int depth,
-                            bool *changed) {
-  *changed = false;
-  if (block->stackDepth < 0) {
-    block->stackDepth = depth;
-    if (depth > 0) {
-      block->entryValues = malloc(sizeof(IRValue) * (size_t)depth);
-      block->parameters = malloc(sizeof(IRValue) * (size_t)depth);
-      if (block->entryValues == NULL || block->parameters == NULL) exit(1);
-      for (int i = 0; i < depth; i++) {
-        block->entryValues[i] = incoming[i];
-        block->parameters[i] = IR_NO_VALUE;
-      }
-    }
-    *changed = true;
-    return true;
-  }
-  if (block->stackDepth != depth) return false;
+static bool initializeBlockValues(IRFunction *function, IRBlock *block,
+                                  int depth) {
+  if (block->stackDepth >= 0) return block->stackDepth == depth;
 
-  for (int i = 0; i < depth; i++) {
-    if (block->entryValues[i] == incoming[i] ||
-        block->parameters[i] != IR_NO_VALUE) {
-      continue;
+  block->stackDepth = depth;
+  if (depth > 0) {
+    block->entryValues = malloc(sizeof(IRValue) * (size_t)depth);
+    block->parameters = malloc(sizeof(IRValue) * (size_t)depth);
+    if (block->entryValues == NULL || block->parameters == NULL) exit(1);
+    for (int i = 0; i < depth; i++) {
+      IRValue parameter = newValue(function);
+      block->entryValues[i] = parameter;
+      block->parameters[i] = parameter;
     }
-    block->parameters[i] = newValue(function);
-    block->entryValues[i] = block->parameters[i];
-    *changed = true;
   }
+
+  if (block->predecessorCount > 0) {
+    block->incomingValues =
+        calloc((size_t)block->predecessorCount, sizeof(IRValue *));
+    if (block->incomingValues == NULL) exit(1);
+  }
+  return true;
+}
+
+static int predecessorIndex(const IRBlock *block, IRBlockId predecessor) {
+  for (int i = 0; i < block->predecessorCount; i++) {
+    if (block->predecessors[i] == predecessor) return i;
+  }
+  return -1;
+}
+
+static bool recordIncomingValues(IRBlock *block, IRBlockId predecessor,
+                                 const IRValue *values, int depth) {
+  if (block->stackDepth != depth) return false;
+  int index = predecessorIndex(block, predecessor);
+  if (index < 0) return false;
+
+  IRValue *incoming = block->incomingValues[index];
+  if (incoming == NULL && depth > 0) {
+    incoming = malloc(sizeof(IRValue) * (size_t)depth);
+    if (incoming == NULL) exit(1);
+    block->incomingValues[index] = incoming;
+  }
+  for (int i = 0; i < depth; i++) incoming[i] = values[i];
   return true;
 }
 
@@ -324,7 +346,6 @@ static bool simulateInstruction(IRFunction *function,
   case IR_NIL:
   case IR_TRUE:
   case IR_FALSE:
-  case IR_LOAD_LOCAL:
   case IR_LOAD_GLOBAL:
   case IR_LOAD_UPVALUE:
   case IR_CLASS:
@@ -333,9 +354,18 @@ static bool simulateInstruction(IRFunction *function,
     return pushValue(stack, depth, capacity,
                      ensureResult(function, instruction));
 
+  case IR_LOAD_LOCAL:
+    if (instruction->operand < 0 || instruction->operand >= *depth) return false;
+    values[0] = (*stack)[instruction->operand];
+    setInputs(instruction, values, 1);
+    return pushValue(stack, depth, capacity,
+                     ensureResult(function, instruction));
+
   case IR_STORE_LOCAL:
     if (*depth < 1 || instruction->operand < 0 ||
-        instruction->operand >= *depth) return false;
+        instruction->operand >= *depth) {
+      return false;
+    }
     values[0] = (*stack)[*depth - 1];
     setInputs(instruction, values, 1);
     (*stack)[instruction->operand] = values[0];
@@ -440,26 +470,23 @@ static bool simulateInstruction(IRFunction *function,
 
 bool buildIRValues(IRFunction *function, int initialStackDepth) {
   if (function->blockCount == 0) return true;
-  if (initialStackDepth < 0) return false;
+  if (initialStackDepth < 0 || function->entry == IR_NO_BLOCK) return false;
+
+  for (int i = 0; i < function->instructionCount; i++) {
+    function->instructions[i].result = IR_NO_VALUE;
+    setInputs(&function->instructions[i], NULL, 0);
+  }
+  function->nextValue = 0;
 
   IRBlock *entry = &function->blocks[function->entry];
-  entry->stackDepth = initialStackDepth;
-  if (initialStackDepth > 0) {
-    entry->entryValues =
-        malloc(sizeof(IRValue) * (size_t)initialStackDepth);
-    entry->parameters =
-        malloc(sizeof(IRValue) * (size_t)initialStackDepth);
-    if (entry->entryValues == NULL || entry->parameters == NULL) exit(1);
-    for (int i = 0; i < initialStackDepth; i++) {
-      IRValue value = newValue(function);
-      entry->entryValues[i] = value;
-      entry->parameters[i] = value;
-    }
-  }
+  if (!initializeBlockValues(function, entry, initialStackDepth)) return false;
 
   bool *queued = calloc((size_t)function->blockCount, sizeof(bool));
-  int *queue = malloc(sizeof(int) * (size_t)function->blockCount);
-  if (queued == NULL || queue == NULL) exit(1);
+  bool *processed = calloc((size_t)function->blockCount, sizeof(bool));
+  IRBlockId *queue =
+      malloc(sizeof(IRBlockId) * (size_t)function->blockCount);
+  if (queued == NULL || processed == NULL || queue == NULL) exit(1);
+
   int head = 0;
   int tail = 0;
   queue[tail++] = function->entry;
@@ -468,6 +495,9 @@ bool buildIRValues(IRFunction *function, int initialStackDepth) {
   while (head < tail) {
     IRBlockId blockId = queue[head++];
     queued[blockId] = false;
+    if (processed[blockId]) continue;
+    processed[blockId] = true;
+
     IRBlock *block = &function->blocks[blockId];
     int depth = block->stackDepth;
     int capacity = depth < 8 ? 8 : depth;
@@ -482,6 +512,7 @@ bool buildIRValues(IRFunction *function, int initialStackDepth) {
                                &capacity)) {
         free(stack);
         free(queued);
+        free(processed);
         free(queue);
         return false;
       }
@@ -490,26 +521,15 @@ bool buildIRValues(IRFunction *function, int initialStackDepth) {
     for (int i = 0; i < block->successorCount; i++) {
       IRBlockId successorId = block->successors[i];
       IRBlock *successor = &function->blocks[successorId];
-      bool changed;
-      if (!mergeBlockStack(function, successor, stack, depth, &changed)) {
+      if (!initializeBlockValues(function, successor, depth) ||
+          !recordIncomingValues(successor, blockId, stack, depth)) {
         free(stack);
         free(queued);
+        free(processed);
         free(queue);
         return false;
       }
-      if (changed && !queued[successorId]) {
-        int pending = tail - head;
-        if (tail == function->blockCount && head > 0) {
-          for (int q = 0; q < pending; q++) queue[q] = queue[head + q];
-          tail = pending;
-          head = 0;
-        }
-        if (tail == function->blockCount) {
-          int *newQueue =
-              realloc(queue, sizeof(int) * (size_t)function->blockCount * 2);
-          if (newQueue == NULL) exit(1);
-          queue = newQueue;
-        }
+      if (!processed[successorId] && !queued[successorId]) {
         queue[tail++] = successorId;
         queued[successorId] = true;
       }
@@ -518,6 +538,7 @@ bool buildIRValues(IRFunction *function, int initialStackDepth) {
   }
 
   free(queued);
+  free(processed);
   free(queue);
   return true;
 }
@@ -734,20 +755,41 @@ static bool hasSingleOperand(IROp op) {
   }
 }
 
+static void printBlockTarget(const IRFunction *function,
+                             IRBlockId predecessor, IRBlockId target) {
+  printf("block%d", target);
+  if (target < 0 || target >= function->blockCount) return;
+
+  const IRBlock *block = &function->blocks[target];
+  int index = predecessorIndex(block, predecessor);
+  if (index < 0 || block->stackDepth <= 0 ||
+      block->incomingValues == NULL ||
+      block->incomingValues[index] == NULL) {
+    return;
+  }
+
+  printf("(");
+  for (int i = 0; i < block->stackDepth; i++) {
+    if (i > 0) printf(", ");
+    printf("%%%d", block->incomingValues[index][i]);
+  }
+  printf(")");
+}
+
 void printIRFunction(const IRFunction *function, const Chunk *constants,
                      const char *name) {
   printf("== IR %s ==\n", name != NULL ? name : "<script>");
   for (int i = 0; i < function->blockCount; i++) {
     const IRBlock *block = &function->blocks[i];
     printf("block%d", block->id);
-    bool printedParameter = false;
-    for (int s = 0; s < block->stackDepth; s++) {
-      if (block->parameters != NULL && block->parameters[s] != IR_NO_VALUE) {
-        printf("%s%%%d", printedParameter ? ", " : "(", block->parameters[s]);
-        printedParameter = true;
+    if (block->stackDepth > 0 && block->parameters != NULL) {
+      printf("(");
+      for (int s = 0; s < block->stackDepth; s++) {
+        if (s > 0) printf(", ");
+        printf("%%%d", block->parameters[s]);
       }
+      printf(")");
     }
-    if (printedParameter) printf(")");
     if (block->predecessorCount > 0) {
       printf(" ; preds:");
       for (int p = 0; p < block->predecessorCount; p++) {
@@ -772,19 +814,22 @@ void printIRFunction(const IRFunction *function, const Chunk *constants,
         }
       }
       if (instruction->op == IR_JUMP) {
-        printf(" block%d", instruction->target);
+        printf(" ");
+        printBlockTarget(function, block->id, instruction->target);
       } else if (instruction->op == IR_BRANCH) {
-        printf(" block%d, block%d", instruction->fallthrough,
-               instruction->target);
+        printf(" ");
+        printBlockTarget(function, block->id, instruction->fallthrough);
+        printf(", ");
+        printBlockTarget(function, block->id, instruction->target);
       } else if (instruction->op == IR_INVOKE ||
                  instruction->op == IR_SUPER_INVOKE) {
         printf(" %d, argc %d", instruction->operand, instruction->operand2);
       } else if (instruction->op == IR_CLOSURE) {
         printf(" %d", instruction->operand);
-        for (int c = 0; c < instruction->captureCount; c++) {
+        for (int capture = 0; capture < instruction->captureCount; capture++) {
           printf(" [%s %d]",
-                 instruction->captures[c].isLocal ? "local" : "upvalue",
-                 instruction->captures[c].index);
+                 instruction->captures[capture].isLocal ? "local" : "upvalue",
+                 instruction->captures[capture].index);
         }
       } else if (hasSingleOperand(instruction->op)) {
         printf(" %d", instruction->operand);

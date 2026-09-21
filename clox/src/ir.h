@@ -81,6 +81,7 @@ typedef struct {
   int successorCapacity;
   IRValue *entryValues;
   IRValue *parameters;
+  IRValue **incomingValues;
   int stackDepth;
 } IRBlock;
 
